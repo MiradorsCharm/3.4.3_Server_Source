@@ -86,6 +86,11 @@ include(ConfigureScripts)
 # set default buildoptions and print them
 include(cmake/options.cmake)
 
+# Enable sccache / ccache when available (build speed, see docs/BuildPerformance.md).
+# Has to happen before the first target is created.
+include(${CMAKE_SOURCE_DIR}/cmake/macros/CompilerCache.cmake)
+configure_compiler_cache()
+
 # turn off PCH totally if enabled (hidden setting, mainly for devs)
 if(NOPCH)
   set(USE_COREPCH 0)

@@ -73,9 +73,22 @@ else()
 endif()
 
 # multithreaded compiling on VS
-target_compile_options(trinity-compile-option-interface
-  INTERFACE
-    /MP)
+#
+# /MP makes cl.exe spawn its own worker processes for the translation units of
+# one project.  That is exactly what the Visual Studio / MSBuild generator
+# needs (MSBuild only parallelises across projects).
+#
+# With Ninja it is actively harmful: Ninja already keeps one cl.exe per core
+# busy, and every one of them would then fan out again with /MP, which only
+# oversubscribes the machine and thrashes memory.  Ninja builds are faster
+# without it.
+if(CMAKE_GENERATOR MATCHES "Ninja")
+  message(STATUS "MSVC: Ninja generator - /MP omitted (Ninja already drives one cl.exe per core)")
+else()
+  target_compile_options(trinity-compile-option-interface
+    INTERFACE
+      /MP)
+endif()
 
 # Make sure the 64-bit hosted compiler is used.
 # The x86 hosted cl.exe is limited to a ~3GB address space and fails to build
@@ -201,3 +214,41 @@ DisableIncrementalLinking(CMAKE_EXE_LINKER_FLAGS_DEBUG)
 DisableIncrementalLinking(CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO)
 DisableIncrementalLinking(CMAKE_SHARED_LINKER_FLAGS_DEBUG)
 DisableIncrementalLinking(CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO)
+
+# ---------------------------------------------------------------------------
+# Build speed switches (see docs/BuildPerformance.md).
+#
+# Both are off by default - they trade disk space / debugger convenience for
+# wall-clock time - but they are one -D away and are what Build-Fast.ps1 uses.
+# ---------------------------------------------------------------------------
+
+# /Zi makes every cl.exe process funnel its debug info through the shared
+# mspdbsrv.exe service, which serialises the whole build and is a classic
+# source of C1902 / stuck builds.  /Z7 embeds the debug info in the object
+# files instead: fully parallel, at the cost of much larger .obj files and a
+# somewhat slower link.  The linker still produces the normal PDB thanks to
+# /DEBUG, so debugging is unaffected.
+if(WITH_FAST_DEBUGINFO)
+  foreach(_lang C CXX)
+    foreach(_config DEBUG RELWITHDEBINFO)
+      string(REGEX REPLACE "/[Zz][iI]" "/Z7" CMAKE_${_lang}_FLAGS_${_config} "${CMAKE_${_lang}_FLAGS_${_config}}")
+    endforeach()
+  endforeach()
+  message(STATUS "MSVC: using /Z7 debug info (WITH_FAST_DEBUGINFO) - faster parallel compiles, larger objects")
+endif()
+
+# /DEBUG:FASTLINK keeps type information in the object files and only builds a
+# partial PDB, which makes linking worldserver dramatically faster.  Debuggers
+# then resolve types on demand (slightly slower first lookup).
+if(WITH_FASTLINK)
+  foreach(_config DEBUG RELWITHDEBINFO)
+    foreach(_var CMAKE_EXE_LINKER_FLAGS_${_config} CMAKE_SHARED_LINKER_FLAGS_${_config} CMAKE_MODULE_LINKER_FLAGS_${_config})
+      if(${_var} MATCHES "/[Dd][Ee][Bb][Uu][Gg]")
+        string(REGEX REPLACE "/[Dd][Ee][Bb][Uu][Gg](:[A-Za-z]+)?" "/DEBUG:FASTLINK" ${_var} "${${_var}}")
+      else()
+        set(${_var} "${${_var}} /DEBUG:FASTLINK")
+      endif()
+    endforeach()
+  endforeach()
+  message(STATUS "MSVC: linking with /DEBUG:FASTLINK (WITH_FASTLINK)")
+endif()

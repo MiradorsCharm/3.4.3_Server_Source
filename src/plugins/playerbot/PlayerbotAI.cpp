@@ -1087,7 +1087,7 @@ bool PlayerbotAI::HasAuraToDispel(Unit* target, uint32 dispelType)
     if (!target)
         return false;
 
-    Unit::AppliedAuraMap const& auras = target->GetAppliedAuras();
+    Unit::AuraApplicationMap const& auras = target->GetAppliedAuras();
     for (auto const& pair : auras)
     {
         AuraApplication const* app = pair.second;
