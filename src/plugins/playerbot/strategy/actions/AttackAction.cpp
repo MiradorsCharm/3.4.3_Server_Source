@@ -43,7 +43,6 @@ bool AttackMyTargetAction::Execute(Event event)
 
 bool AttackAction::Attack(Unit* target)
 {
-    MotionMaster &mm = *bot->GetMotionMaster();
     if (bot->IsFlying())
     {
         if (verbose) ai->TellMaster("I cannot attack in flight");
@@ -62,6 +61,14 @@ bool AttackAction::Attack(Unit* target)
     {
         msg << " is friendly to me";
         if (verbose) ai->TellMaster(msg.str());
+        return false;
+    }
+    if (!target->IsAlive())
+    {
+        msg << " is already dead";
+        if (verbose) ai->TellMaster(msg.str());
+        // A dead current target would just trip the invalid-target trigger
+        // next tick; report it now instead of "successfully" attacking air.
         return false;
     }
     if (!bot->IsWithinLOSInMap(target))
@@ -87,25 +94,45 @@ bool AttackAction::Attack(Unit* target)
         bot->GetSession()->HandleCancelMountAuraOpcode(cancelMount);
     }
 
-    ObjectGuid guid = target->GetGUID();
-    bot->SetSelection(target->GetGUID());
+    // An eating/drinking bot ordered straight into a fight (already in range,
+    // so no reach action stands it up) would try to swing from its chair.
+    if (bot->IsSitState())
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
 
+    // Face the target: melee swings require a 120-degree front arc and spell
+    // casts a 90-degree one, and after a chase the server-side orientation
+    // can lag behind. Facing here makes the very next swing/cast land.
+    if (!bot->isInFront(target, M_PI / 2))
+        bot->SetFacingTo(bot->GetAbsoluteAngle(target));
+
+    // This runs every melee tick for the same victim, so only do the
+    // target-switch work when the victim actually changed. Re-sending
+    // AttackStart (and restarting the pet's chase) every tick is what used
+    // to visibly restart the attack animation from frame zero.
     Unit* oldTarget = context->GetValue<Unit*>("current target")->Get();
-    context->GetValue<Unit*>("old target")->Set(oldTarget);
-
-    context->GetValue<Unit*>("current target")->Set(target);
-    context->GetValue<LootObjectStack*>("available loot")->Get()->Add(guid);
-
-    Pet* pet = bot->GetPet();
-    if (pet)
+    if (oldTarget != target)
     {
-        pet->SetTarget(target->GetGUID());
-        pet->AI()->JustEngagedWith(target);
-		pet->GetCharmInfo()->SetIsCommandAttack(true);
-		pet->AI()->AttackStart(target);
+        ObjectGuid guid = target->GetGUID();
+        bot->SetSelection(guid);
+
+        context->GetValue<Unit*>("old target")->Set(oldTarget);
+        context->GetValue<Unit*>("current target")->Set(target);
+        context->GetValue<LootObjectStack*>("available loot")->Get()->Add(guid);
+
+        if (Pet* pet = bot->GetPet())
+        {
+            pet->SetTarget(target->GetGUID());
+            pet->AI()->JustEngagedWith(target);
+            pet->GetCharmInfo()->SetIsCommandAttack(true);
+            pet->AI()->AttackStart(target);
+        }
     }
 
-    bot->Attack(target, true);
+    // Unit::Attack is a no-op when the same melee swing is already running,
+    // but skip the call entirely so we never spam AttackStart packets.
+    if (bot->GetVictim() != target || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        bot->Attack(target, true);
+
     ai->ChangeEngine(BOT_STATE_COMBAT);
     return true;
 }

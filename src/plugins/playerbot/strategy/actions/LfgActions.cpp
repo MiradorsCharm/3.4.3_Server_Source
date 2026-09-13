@@ -212,7 +212,9 @@ bool LfgAcceptAction::Execute(Event event)
 
         TC_LOG_DEBUG("playerbot",  "Bot {} updated proposal {}", bot->GetName().c_str(), id);
         ai->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(0);
-        bot->ClearUnitState(UNIT_STATE_ALL_STATE_SUPPORTED);
+        // Never blanket-clear unit states: on this core that mask wipes
+        // MELEE_ATTACKING/CASTING/movement states without the matching
+        // packets and desyncs the client. Nothing needs resetting here.
         sLFGMgr->UpdateProposal(id, bot->GetGUID(), true);
 
         return true;
@@ -248,7 +250,8 @@ bool LfgTeleportAction::Execute(Event event)
         p >> out;
     }
 
-    bot->ClearUnitState(UNIT_STATE_ALL_STATE_SUPPORTED);
+    // TeleportPlayer resets movement itself; never blanket-clear unit
+    // states here (see LfgAcceptAction above).
     sLFGMgr->TeleportPlayer(bot, out);
 	return true;
 }

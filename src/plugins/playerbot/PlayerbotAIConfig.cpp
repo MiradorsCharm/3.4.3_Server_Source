@@ -307,7 +307,22 @@ bool PlayerbotAIConfig::Initialize()
     lootDistance = config->GetFloatDefault("AiPlayerbot.LootDistance", 20.0f);
     fleeDistance = config->GetFloatDefault("AiPlayerbot.FleeDistance", 20.0f);
     tooCloseDistance = config->GetFloatDefault("AiPlayerbot.TooCloseDistance", 5.0f);
-    meleeDistance = config->GetFloatDefault("AiPlayerbot.MeleeDistance", 0.5f);
+    // Real melee reach is ~5 yards center-to-center (ATTACK_DISTANCE); the old
+    // 0.5 default made bots chase to a point inside the target's model and
+    // kept "enemy out of melee" (and its chase action, which outranks "set
+    // facing") active even at perfect striking range. 3.0 plants them solidly
+    // inside swing range with margin for 2D-vs-3D distance and slopes.
+    meleeDistance = config->GetFloatDefault("AiPlayerbot.MeleeDistance", 3.0f);
+    // Existing worldserver.conf files generated from the old .dist still
+    // carry 0.5: any sub-1.0 value puts the chase destination inside the
+    // target's collision and reintroduces the never-plant-never-swing
+    // shuffle, so refuse it loudly instead of obeying it.
+    if (meleeDistance < 1.0f)
+    {
+        TC_LOG_ERROR("playerbot", "PlayerbotAIConfig: AiPlayerbot.MeleeDistance ({}) is below 1.0 and would park bots inside their target; using 3.0 instead",
+                meleeDistance);
+        meleeDistance = 3.0f;
+    }
     followDistance = config->GetFloatDefault("AiPlayerbot.FollowDistance", 1.5f);
     whisperDistance = config->GetFloatDefault("AiPlayerbot.WhisperDistance", 6000.0f);
     contactDistance = config->GetFloatDefault("AiPlayerbot.ContactDistance", 0.5f);

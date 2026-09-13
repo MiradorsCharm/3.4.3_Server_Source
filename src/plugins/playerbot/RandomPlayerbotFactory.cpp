@@ -1,5 +1,6 @@
 #include "../pchdef.h"
 #include "playerbot.h"
+#include <unordered_set>
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "../../server/database/Database/DatabaseEnv.h"
@@ -12,6 +13,105 @@
 #include "RandomPlayerbotFactory.h"
 
 map<uint8, vector<uint8> > RandomPlayerbotFactory::availableRaces;
+
+namespace
+{
+    // Syllable pools built from the shipped ai_playerbot_names seeds plus
+    // extra fantasy stems. prefix (+middle) + suffix yields tens of thousands
+    // of unique, pronounceable, WoW-legal (alpha-only, <= 12 chars) names.
+    char const* BotNamePrefixes[] =
+    {
+        "Ael", "Ash", "Bal", "Bel", "Bran", "Cath", "Cir", "Cor", "Dal", "Dor",
+        "Drav", "Eld", "Elo", "Fae", "Fal", "Fen", "Gal", "Gar", "Gor", "Gwy",
+        "Hal", "Har", "Ith", "Iso", "Jor", "Jar", "Kae", "Kel", "Lor", "Lya",
+        "Mal", "Mer", "Mor", "Nor", "Nyr", "Ond", "Or", "Pel", "Per", "Quen",
+        "Rho", "Row", "Sel", "Syl", "Tha", "Thor", "Tor", "Ul", "Ulm", "Val",
+        "Var", "Ver", "Wil", "Wyn", "Xan", "Yal", "Yor", "Zal", "Zer", "Zev"
+    };
+
+    char const* BotNameMiddles[] =
+    {
+        "a", "e", "i", "o", "u", "ae", "al", "an", "ar", "bel",
+        "el", "en", "er", "ia", "il", "in", "ir", "ol", "on", "or",
+        "un", "ur", "wen", "wyn"
+    };
+
+    char const* BotNameSuffixes[] =
+    {
+        "brik", "dal", "dak", "del", "dor", "dith", "drin", "ella", "elle",
+        "ena", "enna", "eth", "gar", "ien", "ik", "ira", "lan", "len", "lene",
+        "lith", "lde", "low", "lric", "mara", "mir", "mire", "mor", "nan",
+        "noc", "nor", "ran", "rel", "rick", "rik", "rin", "run", "son", "tar",
+        "thas", "the", "ther", "vald", "vara", "var", "vel", "vin", "wick",
+        "win", "wyn", "wynd", "yth"
+    };
+
+    template <size_t N>
+    char const* Pick(char const* (&pool)[N])
+    {
+        return pool[urand(0, N - 1)];
+    }
+
+    std::string GenerateBotName()
+    {
+        std::string name;
+        int roll = irand(0, 9);
+        if (roll < 4)                                           // prefix + suffix
+            name = std::string(Pick(BotNamePrefixes)) + Pick(BotNameSuffixes);
+        else if (roll < 9)                                      // prefix + middle + suffix
+            name = std::string(Pick(BotNamePrefixes)) + Pick(BotNameMiddles) + Pick(BotNameSuffixes);
+        else                                                    // prefix + middle (short names)
+            name = std::string(Pick(BotNamePrefixes)) + Pick(BotNameMiddles);
+
+        // Pools are already stored Title/lowercase, so the concatenation is
+        // correctly cased as-is.
+        return name;
+    }
+
+    char const* GuildNameAdjectives[] =
+    {
+        "Wandering", "Emerald", "Ashen", "Silver", "Iron", "Nightfall", "Dawn",
+        "Storm", "Crimson", "Golden", "Shadow", "Crystal", "Thunder", "Frost",
+        "Ember", "Moon", "Sun", "Star", "Silent", "Broken", "Burning", "Frozen",
+        "Howling", "Whispering", "Radiant", "Umbral", "Verdant", "Obsidian"
+    };
+
+    char const* GuildNameNouns[] =
+    {
+        "Blades", "Vanguard", "Company", "Watch", "Hand", "Breakers", "Regulars",
+        "Covenant", "Caravan", "Guard", "Sentinels", "Wardens", "Legion", "Order",
+        "Circle", "Pact", "Brotherhood", "Expedition", "Crusade", "Hunters",
+        "Riders", "Keepers", "Seekers", "Striders"
+    };
+
+    char const* GuildNamePlaces[] =
+    {
+        "Lordaeron", "Stormwind", "Ironforge", "Darnassus", "Orgrimmar",
+        "Undercity", "Dalaran", "Northrend", "Outland", "Azeroth", "Elwynn",
+        "Durotar", "Stranglethorn", "Winterspring"
+    };
+
+    std::string GenerateGuildName()
+    {
+        std::string name;
+        switch (irand(0, 3))
+        {
+            case 0:
+                name = std::string(Pick(GuildNameAdjectives)) + " " + Pick(GuildNameNouns);
+                break;
+            case 1:
+                name = std::string("The ") + Pick(GuildNameAdjectives) + " " + Pick(GuildNameNouns);
+                break;
+            case 2:
+                name = std::string(Pick(GuildNameNouns)) + " of " + Pick(GuildNamePlaces);
+                break;
+            default:
+                name = std::string(Pick(GuildNamePlaces)) + " " + Pick(GuildNameNouns);
+                break;
+        }
+        return name;
+    }
+}
 
 RandomPlayerbotFactory::RandomPlayerbotFactory(uint32 accountId) : accountId(accountId)
 {
@@ -269,12 +369,131 @@ static string RandomBotAccountPattern(string const& prefix)
     return pattern + '%';
 }
 
+void RandomPlayerbotFactory::EnsureNamePool()
+{
+    // Characters are created per account (up to 10 each) while MaxRandomBots
+    // bounds the live population - cover both, so raising either setting
+    // (e.g. 400 max bots) never strands creation with "No more names left".
+    // The shipped seed holds ~50 names; the generator below tops the pool up
+    // automatically, no manual INSERTs required.
+    uint32 need = std::max<uint32>(sPlayerbotAIConfig.randomBotAccountCount * 10,
+            sPlayerbotAIConfig.maxRandomBots);
+
+    QueryResult countResult = CharacterDatabase.Query("SELECT COUNT(*) FROM ai_playerbot_names");
+    uint32 have = (countResult ? countResult->Fetch()[0].GetUInt32() : 0);
+    if (have >= need)
+        return;
+
+    uint32 missing = need - have;
+    std::unordered_set<std::string> fresh;
+    fresh.reserve(missing * 2);
+
+    uint32 attempts = 0;
+    uint32 const maxAttempts = missing * 100 + 1000;
+    while (fresh.size() < missing && attempts < maxAttempts)
+    {
+        ++attempts;
+        std::string name = GenerateBotName();
+        if (name.size() < 3 || name.size() > 12)
+            continue;
+        if (!fresh.insert(name).second)
+            continue;
+        // Same validation Player::Create applies (length, charset, triple
+        // letters, profanity/reserved lists): never store a name that would
+        // fail creation and burn one of the per-slot attempts below.
+        if (ObjectMgr::CheckPlayerName(name, LOCALE_enUS, true) != CHAR_NAME_SUCCESS)
+        {
+            fresh.erase(name);
+            continue;
+        }
+    }
+
+    // DirectExecute (synchronous): the name picker below queries the pool
+    // immediately, so async Execute could still be queued when it runs.
+    uint32 batched = 0;
+    std::string values;
+    for (std::string const& name : fresh)
+    {
+        if (!values.empty())
+            values += ',';
+        // Alpha-only by construction (and CheckPlayerName-verified): safe to
+        // interpolate. Random gender; the pool is unisex.
+        values += "('";
+        values += name;
+        values += "',";
+        values += (urand(0, 1) ? '1' : '0');
+        values += ')';
+        if (++batched % 200 == 0)
+        {
+            CharacterDatabase.DirectExecute(("INSERT IGNORE INTO ai_playerbot_names (name, gender) VALUES " + values).c_str());
+            values.clear();
+        }
+    }
+    if (!values.empty())
+        CharacterDatabase.DirectExecute(("INSERT IGNORE INTO ai_playerbot_names (name, gender) VALUES " + values).c_str());
+
+    TC_LOG_INFO("playerbot", "Random bot name pool topped up: {} names in ai_playerbot_names, {} generated ({} needed)",
+            have, fresh.size(), need);
+}
+
+void RandomPlayerbotFactory::EnsureGuildNamePool()
+{
+    uint32 need = sPlayerbotAIConfig.randomBotGuildCount;
+
+    QueryResult countResult = CharacterDatabase.Query("SELECT COUNT(*) FROM ai_playerbot_guild_names");
+    uint32 have = (countResult ? countResult->Fetch()[0].GetUInt32() : 0);
+    if (have >= need)
+        return;
+
+    uint32 missing = need - have;
+    std::unordered_set<std::string> fresh;
+    fresh.reserve(missing * 2);
+
+    uint32 attempts = 0;
+    uint32 const maxAttempts = missing * 100 + 1000;
+    while (fresh.size() < missing && attempts < maxAttempts)
+    {
+        ++attempts;
+        std::string name = GenerateGuildName();
+        if (name.size() < 4 || name.size() > 24)
+            continue;
+        fresh.insert(name);
+    }
+
+    // DirectExecute (synchronous, see EnsureNamePool above).
+    uint32 batched = 0;
+    std::string values;
+    for (std::string const& name : fresh)
+    {
+        if (!values.empty())
+            values += ',';
+        values += "('";                                     // letters/spaces only: SQL-safe
+        values += name;
+        values += "')";
+        if (++batched % 200 == 0)
+        {
+            CharacterDatabase.DirectExecute(("INSERT IGNORE INTO ai_playerbot_guild_names (name) VALUES " + values).c_str());
+            values.clear();
+        }
+    }
+    if (!values.empty())
+        CharacterDatabase.DirectExecute(("INSERT IGNORE INTO ai_playerbot_guild_names (name) VALUES " + values).c_str());
+
+    TC_LOG_INFO("playerbot", "Random guild name pool topped up: {} names in ai_playerbot_guild_names, {} generated ({} needed)",
+            have, fresh.size(), need);
+}
+
 void RandomPlayerbotFactory::CreateRandomBots()
 {
     // This runs at startup and can re-run later (creation retry, "rndbot init"):
     // rebuild the account list from scratch so repeated runs do not accumulate
     // duplicate entries (every extra entry costs character queries each tick).
     sPlayerbotAIConfig.randomBotAccounts.clear();
+
+    // Grow the name pools first: with 400 max bots configured the ~50 shipped
+    // names would otherwise be exhausted before creation even starts.
+    EnsureNamePool();
+    EnsureGuildNamePool();
 
     string accountPattern = RandomBotAccountPattern(sPlayerbotAIConfig.randomBotAccountPrefix);
     if (sPlayerbotAIConfig.deleteRandomBotAccounts)
@@ -389,6 +608,8 @@ void RandomPlayerbotFactory::CreateRandomBots()
 
 void RandomPlayerbotFactory::CreateRandomGuilds()
 {
+    EnsureGuildNamePool();
+
     vector<uint32> randomBots;
     QueryResult results = LoginDatabase.PQuery("SELECT id FROM account where username like '{}%'", sPlayerbotAIConfig.randomBotAccountPrefix.c_str());
     if (results)
@@ -484,8 +705,8 @@ void RandomPlayerbotFactory::CreateRandomGuilds()
 
 string RandomPlayerbotFactory::CreateRandomGuildName()
 {
-    QueryResult result = CharacterDatabase.Query("SELECT MAX(name_id) FROM ai_playerbot_guild_names");
-    if (!result)
+    QueryResult result = CharacterDatabase.Query("SELECT MAX(name_id), MIN(name_id) FROM ai_playerbot_guild_names");
+    if (!result || !result->GetRowCount())
     {
         TC_LOG_ERROR("playerbot",  "No more names left for random guilds");
         return "";
@@ -493,18 +714,41 @@ string RandomPlayerbotFactory::CreateRandomGuildName()
 
     Field *fields = result->Fetch();
     uint32 maxId = fields[0].GetUInt32();
-
-    uint32 id = urand(0, maxId);
-    result = CharacterDatabase.PQuery("SELECT n.name FROM ai_playerbot_guild_names n "
-            "LEFT OUTER JOIN guild e ON e.name = n.name "
-            "WHERE e.guildid IS NULL AND n.name_id >= '{}' LIMIT 1", id);
-    if (!result)
+    uint32 minId = fields[1].GetUInt32();
+    if (!maxId || maxId < minId)
     {
         TC_LOG_ERROR("playerbot",  "No more names left for random guilds");
         return "";
     }
 
-    fields = result->Fetch();
-    return fields[0].GetString();
+    // Same single-probe flaw the bot-name picker used to have: one random
+    // offset past the last free row reported "no names left" while free rows
+    // remained. Retry several offsets, then take the first free row.
+    for (int attempt = 0; attempt < 10; ++attempt)
+    {
+        uint32 id = urand(minId, maxId);
+        result = CharacterDatabase.PQuery("SELECT n.name FROM ai_playerbot_guild_names n "
+                "LEFT OUTER JOIN guild e ON e.name = n.name "
+                "WHERE e.guildid IS NULL AND n.name_id >= '{}' "
+                "ORDER BY n.name_id LIMIT 1", id);
+        if (result)
+        {
+            fields = result->Fetch();
+            return fields[0].GetString();
+        }
+    }
+
+    result = CharacterDatabase.PQuery("SELECT n.name FROM ai_playerbot_guild_names n "
+            "LEFT OUTER JOIN guild e ON e.name = n.name "
+            "WHERE e.guildid IS NULL "
+            "ORDER BY n.name_id LIMIT 1");
+    if (result)
+    {
+        fields = result->Fetch();
+        return fields[0].GetString();
+    }
+
+    TC_LOG_ERROR("playerbot",  "No more names left for random guilds");
+    return "";
 }
 

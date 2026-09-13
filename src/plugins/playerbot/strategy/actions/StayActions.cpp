@@ -15,7 +15,11 @@ void StayActionBase::Stay()
 
     mm.Clear();
     mm.MoveIdle();
-    bot->ClearUnitState( UNIT_STATE_ALL_STATE_SUPPORTED );
+    // MotionMaster::Clear alone does not stop a running spline - the bot
+    // would glide on. Halt it explicitly. (Never blanket-clear unit states
+    // here: that kills UNIT_STATE_MELEE_ATTACKING without an AttackStop
+    // packet and desyncs the client's attack animation.)
+    bot->StopMoving();
 
     if (!bot->IsStandState())
         bot->SetStandState(UNIT_STAND_STATE_STAND);
