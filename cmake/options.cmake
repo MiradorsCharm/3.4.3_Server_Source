@@ -55,3 +55,14 @@ set(WITH_SOURCE_TREE    "hierarchical" CACHE STRING "Build the source tree for I
 set_property(CACHE WITH_SOURCE_TREE PROPERTY STRINGS no flat hierarchical hierarchical-folders)
 option(WITHOUT_GIT      "Disable the GIT testing routines"                            0)
 option(BUILD_TESTING    "Build test suite" 0)
+
+# ---------------------------------------------------------------------------
+# Build speed options.  See docs/BuildPerformance.md for what each one does
+# and how much it is expected to save.
+# ---------------------------------------------------------------------------
+option(WITH_UNITY_BUILD "Merge the playerbot sources into combined translation units (much faster, opt-in)" 0)
+set(WITH_UNITY_BUILD_BATCH_SIZE 8 CACHE STRING "Sources per unity translation unit")
+option(WITH_FAST_DEBUGINFO "MSVC: use /Z7 instead of /Zi (no shared PDB, better /MP scaling)" 0)
+option(WITH_FASTLINK      "MSVC: link with /DEBUG:FASTLINK (faster links, slower debugger startup)" 0)
+set(WITH_COMPILER_CACHE "AUTO" CACHE STRING "Compiler cache to use: AUTO, sccache, ccache or none")
+set_property(CACHE WITH_COMPILER_CACHE PROPERTY STRINGS AUTO sccache ccache none)

@@ -49,6 +49,10 @@ endforeach()
 target_include_directories(plugins
   PRIVATE
     ${CMAKE_SOURCE_DIR}/src/server
+    # pchdef.h includes the game PCH (PrecompiledHeaders/gamePCH.h) instead of
+    # repeating its contents; make sure that path always resolves even if the
+    # recursive collection above is ever narrowed.
+    ${CMAKE_SOURCE_DIR}/src/server/game/PrecompiledHeaders
     ${PLUGIN_INCLUDES})
 
 add_definitions(-DTRINITY_API_EXPORT_plugins)
@@ -62,8 +66,47 @@ set_target_properties(plugins
 # Every plugin translation unit already starts with #include "../pchdef.h",
 # so turning it into a real PCH is free and cuts the compile time of the ~500
 # bot sources down massively.
+#
+# pchdef.h holds the *core* headers (the ~74k lines every bot source used to
+# re-parse); the playerbot headers themselves stay out of it on purpose so
+# editing a bot header does not invalidate the PCH.
 if(USE_COREPCH)
   add_cxx_pch(plugins ${CMAKE_CURRENT_SOURCE_DIR}/pchdef.h)
+endif()
+
+# ---------------------------------------------------------------------------
+# Optional unity (jumbo) build for the plugin.
+#
+# The 258 bot sources are small (27k lines in total) but every one of them
+# pulls in the whole core header set, so the per-file overhead dwarfs the
+# actual compilation.  Merging them into batches of 8 translation units removes
+# almost all of that overhead and stacks with the PCH above.
+#
+# This is OFF by default because translated sources share one translation unit
+# and can clash (two files defining the same file-local helper, macros leaking
+# into the next file, ...).  A scan of the tree shows the plugin is clean on
+# MSVC - the known offenders below are excluded - but it is opt-in so a stock
+# build never depends on it.
+# ---------------------------------------------------------------------------
+if(WITH_UNITY_BUILD)
+  set_target_properties(plugins
+    PROPERTIES
+      UNITY_BUILD ON
+      UNITY_BUILD_MODE BATCH
+      UNITY_BUILD_BATCH_SIZE ${WITH_UNITY_BUILD_BATCH_SIZE})
+
+  # These files define the same file-local helpers (strcmpi / strstri) and must
+  # never be merged into the same translation unit.
+  set_source_files_properties(
+    playerbot/PlayerbotAI.cpp
+    playerbot/GuildTaskMgr.cpp
+    playerbot/RandomItemMgr.cpp
+    playerbot/strategy/actions/WhoAction.cpp
+    playerbot/strategy/values/ItemForSpellValue.cpp
+    PROPERTIES
+      SKIP_UNITY_BUILD_INCLUSION ON)
+
+  message(STATUS "Playerbot plugin: unity build enabled (batch size ${WITH_UNITY_BUILD_BATCH_SIZE})")
 endif()
 
 # Playerbot settings are shipped in src/server/worldserver/worldserver.conf.dist

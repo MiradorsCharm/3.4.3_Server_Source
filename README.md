@@ -96,6 +96,21 @@ cmake --install build --config RelWithDebInfo --prefix C:\TrinityCore
 > otherwise fine, e.g. `SharedDefines.h: error C2039: 'unordered_map': is not a
 > member of 'std'` followed by thousands of cascading errors.
 
+### Faster builds
+
+The full build is ~1,300 translation units and is dominated by header parsing.
+Two things help most: a real precompiled header for the bot plugin (already on
+by default) and a faster generator + compiler cache.
+
+```bat
+Build-Fast.bat                        :: Ninja + sccache + PCH, all cores but one
+Build-Fast.bat -Unity -FastDebugInfo  :: additionally merge bot sources and use /Z7
+```
+
+See [docs/BuildPerformance.md](docs/BuildPerformance.md) for the individual
+CMake switches (`WITH_UNITY_BUILD`, `WITH_FAST_DEBUGINFO`, `WITH_FASTLINK`,
+`WITH_COMPILER_CACHE`) and what each one trades away.
+
 ### Troubleshooting
 
 **"Error: generator toolset: Does not match the toolset used previously: host=x64"**
