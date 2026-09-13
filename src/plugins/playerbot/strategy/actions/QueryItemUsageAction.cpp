@@ -154,7 +154,10 @@ void QueryItemUsageAction::QueryQuestItem(uint32 itemId)
 
         uint32 questId = questTemplate->GetQuestId();
         QuestStatus status = bot->GetQuestStatus(questId);
-        if (status == QUEST_STATUS_INCOMPLETE || (status == QUEST_STATE_COMPLETE && !bot->GetQuestRewardStatus(questId)))
+        // QUEST_STATE_COMPLETE is a QuestSlotStateMask bit, not a QuestStatus - it
+        // only compared equal here by numeric coincidence (both happen to be 1).
+        // "Finished but reward not taken yet" is QUEST_STATUS_COMPLETE.
+        if (status == QUEST_STATUS_INCOMPLETE || (status == QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId)))
         {
             QuestStatusData const& questStatus = i->second;
             QueryQuestItem(itemId, questTemplate, &questStatus);

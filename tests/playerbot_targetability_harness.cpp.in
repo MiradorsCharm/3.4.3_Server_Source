@@ -1,0 +1,157 @@
+// Lightweight API-contract fakes for playerbot_target_filter_test.py.
+//
+// The marked block is replaced with the *current* production body of
+// PossibleTargetsValue::AcceptUnit, so this file both proves the bot only reaches
+// for core APIs that 3.4.3 actually declares and pins the filtering behaviour.
+//
+// The Unit fake mirrors the real core contract of the members AcceptUnit uses:
+//   * Unit::isTargetableForAttack(bool checkFakeDeath) - see Unit.cpp: alive,
+//     !UNIT_FLAG_NON_ATTACKABLE, !IsUninteractible() (UNIT_FLAG_UNINTERACTIBLE is
+//     this core's name for the 3.3.5 UNIT_FLAG_NOT_SELECTABLE bit 0x02000000),
+//     not a GM player, !UNIT_STATE_UNATTACKABLE.
+//   * Unit::IsHostileTo / Unit::IsFriendlyTo / Unit::GetLevel.
+// Any core member the bot calls that is missing here fails to compile - the same
+// shape of failure MSVC reports as "C2039/C2065: undeclared identifier".
+
+#include <cstdint>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+using uint8 = uint8_t;
+using uint32 = uint32_t;
+
+#define CHECK(...) do { if (!(__VA_ARGS__)) throw std::runtime_error("Check failed at line " + std::to_string(__LINE__) + ": " #__VA_ARGS__); } while (false)
+
+struct Unit
+{
+    bool alive = true;
+    bool nonAttackable = false;       // UNIT_FLAG_NON_ATTACKABLE
+    bool uninteractible = false;      // UNIT_FLAG_UNINTERACTIBLE (3.3.5: NOT_SELECTABLE)
+    bool unattackableState = false;   // UNIT_STATE_UNATTACKABLE
+    bool gameMaster = false;
+    uint32 level = 10;
+
+    // UnitReaction, reduced to the three states the filter cares about: the core
+    // answers IsHostileTo() only for HOSTILE/THREATENED and IsFriendlyTo() only
+    // for FRIENDLY, so a neutral unit is neither.
+    enum class Reaction { Neutral, Friendly, Hostile };
+    Reaction reaction = Reaction::Hostile;
+
+    bool IsAlive() const { return alive; }
+    bool IsUninteractible() const { return uninteractible; }
+    uint32 GetLevel() const { return level; }
+
+    // A unit is never hostile to itself and always friendly to itself, like the
+    // real faction/reaction helpers behave for "me vs me".
+    bool IsHostileTo(Unit const* other) const { return other != this && reaction == Reaction::Hostile; }
+    bool IsFriendlyTo(Unit const* other) const { return other == this || reaction == Reaction::Friendly; }
+
+    // Same conjunction as Unit::isTargetableForAttack in src/server/game/Entities/Unit/Unit.cpp.
+    bool isTargetableForAttack(bool checkFakeDeath = true) const
+    {
+        if (!IsAlive())
+            return false;
+        if (nonAttackable || IsUninteractible())
+            return false;
+        if (gameMaster)
+            return false;
+        (void)checkFakeDeath;  // the fake-death unit state is not modelled here
+        return !unattackableState;
+    }
+};
+
+struct Player : Unit
+{
+};
+
+namespace ai
+{
+    class PossibleTargetsValue
+    {
+    public:
+        Player* bot = nullptr;
+        bool AcceptUnit(Unit* unit);
+    };
+
+@ACCEPT_UNIT@
+}
+
+namespace
+{
+    bool AcceptUnitOn(Player& bot, Unit* unit)
+    {
+        ai::PossibleTargetsValue value;
+        value.bot = &bot;
+        return value.AcceptUnit(unit);
+    }
+}
+
+int main()
+{
+    try
+    {
+        Player bot;
+        bot.level = 20;
+        bot.reaction = Unit::Reaction::Friendly;
+
+        Unit targetable;
+        targetable.level = 20;
+        CHECK(AcceptUnitOn(bot, &targetable) == true);
+
+        // The whole point of the filter: an alive unit the client cannot select or
+        // attack (quest/event actor, boss mid-script) must not be offered as a
+        // target, otherwise the bot cycles attack -> instantly dropped every tick.
+        Unit notSelectable = targetable;
+        notSelectable.uninteractible = true;
+        CHECK(AcceptUnitOn(bot, &notSelectable) == false);
+
+        Unit spawning = targetable;
+        spawning.nonAttackable = true;
+        CHECK(AcceptUnitOn(bot, &spawning) == false);
+
+        Unit unattackableState = targetable;
+        unattackableState.unattackableState = true;
+        CHECK(AcceptUnitOn(bot, &unattackableState) == false);
+
+        Unit dead = targetable;
+        dead.alive = false;
+        CHECK(AcceptUnitOn(bot, &dead) == false);
+
+        Unit gameMaster = targetable;
+        gameMaster.gameMaster = true;
+        CHECK(AcceptUnitOn(bot, &gameMaster) == false);
+
+        // Hostile-to-bot units are always candidates; a neutral only once it is
+        // above level 1 (the "do not chase critters" filter), a friendly never.
+        Unit enemy = targetable;
+        enemy.reaction = Unit::Reaction::Hostile;
+        CHECK(AcceptUnitOn(bot, &enemy) == true);
+
+        Unit neutral = targetable;
+        neutral.reaction = Unit::Reaction::Neutral;
+        neutral.level = 2;
+        CHECK(AcceptUnitOn(bot, &neutral) == true);
+
+        Unit critter = targetable;
+        critter.reaction = Unit::Reaction::Neutral;
+        critter.level = 1;
+        CHECK(AcceptUnitOn(bot, &critter) == false);
+
+        Unit friend_ = targetable;
+        friend_.reaction = Unit::Reaction::Friendly;
+        friend_.level = 60;
+        CHECK(AcceptUnitOn(bot, &friend_) == false);
+
+        // A bot never targets itself.
+        CHECK(AcceptUnitOn(bot, &bot) == false);
+    }
+    catch (std::exception const& e)
+    {
+        std::cout << "FAILED: " << e.what() << std::endl;
+        return 1;
+    }
+
+    std::cout << "ok" << std::endl;
+    return 0;
+}
