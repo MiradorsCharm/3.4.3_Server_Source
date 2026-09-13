@@ -146,8 +146,10 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget)
 
     MotionMaster &mm = *bot->GetMotionMaster();
     mm.Clear();
-    bot->ClearUnitState(UNIT_STATE_CHASE);
-    bot->ClearUnitState(UNIT_STATE_FOLLOW);
+    // Stop the spline too: mm.Clear() alone leaves it running, so the bot
+    // would glide on and isMoving() below would keep failing. Clearing raw
+    // CHASE/FOLLOW states instead only desyncs the motion master.
+    bot->StopMoving();
 
     if (bot->isMoving())
         return false;

@@ -4,6 +4,7 @@
 #include "strategy/actions/MovementActions.h"
 #include "Movement/MotionMaster.h"
 #include "Movement/MovementGenerator.h"
+#include "Movement/Spline/MoveSpline.h"
 #include "../../FleeManager.h"
 #include "../../LootObjectStack.h"
 #include "../../PlayerbotAIConfig.h"
@@ -45,6 +46,21 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z)
     float distance = bot->GetDistance2d(x, y);
     if (distance > sPlayerbotAIConfig.contactDistance)
     {
+        // Reach/follow actions run every AI tick: tearing down and relaunching
+        // the spline each time makes movement stutter and spams spline packets
+        // to everyone nearby. If the live spline is already taking us (almost)
+        // there, let it run and just wait for it.
+        if (!bot->movespline->Finalized())
+        {
+            auto dest = bot->movespline->FinalDestination();
+            float dx = dest.x - x, dy = dest.y - y;
+            if (dx * dx + dy * dy < 2.0f * 2.0f)
+            {
+                WaitForReach(distance);
+                return true;
+            }
+        }
+
         WaitForReach(distance);
 
         if (bot->IsSitState())
@@ -181,8 +197,12 @@ bool MovementAction::Follow(Unit* target, float distance, float angle)
             abs(bot->GetPositionZ() - target->GetPositionZ()) >= sPlayerbotAIConfig.spellDistance)
     {
         mm.Clear();
+        // A live spline would overwrite the snap on the next update.
+        bot->StopMoving();
         float x = bot->GetPositionX(), y = bot->GetPositionY(), z = target->GetPositionZ();
-        if (target->GetMapId() && bot->GetMapId() != target->GetMapId())
+        // Map 0 (Eastern Kingdoms) is a valid map id, so it must not gate the
+        // cross-map branch - comparing the maps is the whole check.
+        if (bot->GetMapId() != target->GetMapId())
         {
             bot->TeleportTo(target->GetMapId(), x, y, z, bot->GetOrientation());
         }
@@ -193,6 +213,14 @@ bool MovementAction::Follow(Unit* target, float distance, float angle)
         AI_VALUE(LastMovement&, "last movement").Set(target);
         return true;
     }
+
+    // Already glued to this target: MoveFollow would tear down and rebuild
+    // the follow generator (and re-path) every AI tick. Let it run. (Same map
+    // only - a cross-map target needs a fresh follow/teleport, not this.)
+    if (bot->GetMapId() == target->GetMapId() &&
+        mm.GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+        AI_VALUE(LastMovement&, "last movement").lastFollow == target)
+        return true;
 
     if (!IsMovingAllowed(target))
         return false;

@@ -257,7 +257,11 @@ void PlayerbotAI::Reset()
     LastMovement & lastMovement = aiObjectContext->GetValue<LastMovement& >("last movement")->Get();
     lastMovement.Set(NULL);
 
+    // MotionMaster::Clear drops the generators but leaves a running spline
+    // alive, so without StopMoving the bot glides on to its old destination
+    // after every follow/stay/grind order. Stop it dead here.
     bot->GetMotionMaster()->Clear();
+    bot->StopMoving();
     bot->m_taxi.ClearTaxiDestinations();
     InterruptSpell();
 
@@ -915,12 +919,19 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target)
     aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().Set(spellId, target->GetGUID(), time(0));
     aiObjectContext->GetValue<LastMovement&>("last movement")->Get().Set(NULL);
 
-    MotionMaster &mm = *bot->GetMotionMaster();
-
     if (bot->IsFlying())
         return false;
 
-    bot->ClearUnitState( UNIT_STATE_ALL_STATE_SUPPORTED );
+    // Never blanket-clear unit states here. The legacy
+    // ClearUnitState(UNIT_STATE_ALL_STATE_SUPPORTED) line used to sit here,
+    // and on this core that mask covers EVERY state - including
+    // UNIT_STATE_MELEE_ATTACKING. Every special ability therefore silently
+    // stopped the bot's autoattack (without the AttackStop packet, so the
+    // client stayed frozen in attack stance), and the next melee tick
+    // re-sent AttackStart - the "first attack frame over and over, never
+    // actually swinging" loop. The spell system sets/clears CASTING itself,
+    // and movement is handled by the reach actions, so there is nothing to
+    // reset here at all.
 
     Unit* oldSel = bot->GetSelectedUnit();
     bot->SetSelection(target->GetGUID());

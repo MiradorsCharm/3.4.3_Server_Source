@@ -18,6 +18,11 @@ void PossibleTargetsValue::FindUnits(list<Unit*> &targets)
 
 bool PossibleTargetsValue::AcceptUnit(Unit* unit)
 {
-    return !unit->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) &&
+    // Unselectable units (event/quest actors, some bosses mid-script) can be
+    // unfriendly yet impossible to attack - targeting them only produces an
+    // attack -> instant-drop cycle every AI tick.
+    return unit->IsAlive() &&
+            !unit->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) &&
+            !unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) &&
             (unit->IsHostileTo(bot) || (unit->GetLevel() > 1 && !unit->IsFriendlyTo(bot)));
 }

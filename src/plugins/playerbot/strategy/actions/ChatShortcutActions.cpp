@@ -5,6 +5,21 @@
 
 using namespace ai;
 
+namespace
+{
+    // follow/stay/flee/runaway are explicit orders: stop proactive grinding
+    // and go back to the default assist behaviour (help when the group is
+    // attacked, otherwise stick to the movement order). grind/dps assist/
+    // tank aoe are siblings, so adding the default evicts grind.
+    void RestoreDefaultAssist(PlayerbotAI* ai, Player* bot)
+    {
+        if (ai->IsTank(bot))
+            ai->ChangeStrategy("+tank aoe", BOT_STATE_NON_COMBAT);
+        else
+            ai->ChangeStrategy("+dps assist", BOT_STATE_NON_COMBAT);
+    }
+}
+
 bool FollowChatShortcutAction::Execute(Event event)
 {
     Player* master = GetMaster();
@@ -12,6 +27,7 @@ bool FollowChatShortcutAction::Execute(Event event)
         return false;
 
     ai->Reset();
+    RestoreDefaultAssist(ai, bot);
     ai->ChangeStrategy("+follow,-passive", BOT_STATE_NON_COMBAT);
     ai->ChangeStrategy("-follow,-passive", BOT_STATE_COMBAT);
     if (bot->GetMapId() != master->GetMapId() || bot->GetDistance(master) > sPlayerbotAIConfig.sightDistance)
@@ -30,6 +46,7 @@ bool StayChatShortcutAction::Execute(Event event)
         return false;
 
     ai->Reset();
+    RestoreDefaultAssist(ai, bot);
     ai->ChangeStrategy("+stay,-passive", BOT_STATE_NON_COMBAT);
     ai->ChangeStrategy("-follow,-passive", BOT_STATE_COMBAT);
     ai->TellMaster("Staying");
@@ -43,6 +60,7 @@ bool FleeChatShortcutAction::Execute(Event event)
         return false;
 
     ai->Reset();
+    RestoreDefaultAssist(ai, bot);
     ai->ChangeStrategy("+follow,+passive", BOT_STATE_NON_COMBAT);
     ai->ChangeStrategy("+follow,+passive", BOT_STATE_COMBAT);
     if (bot->GetMapId() != master->GetMapId() || bot->GetDistance(master) > sPlayerbotAIConfig.sightDistance)
@@ -61,6 +79,7 @@ bool GoawayChatShortcutAction::Execute(Event event)
         return false;
 
     ai->Reset();
+    RestoreDefaultAssist(ai, bot);
     ai->ChangeStrategy("+runaway", BOT_STATE_NON_COMBAT);
     ai->ChangeStrategy("+runaway", BOT_STATE_COMBAT);
     ai->TellMaster("Running away");
@@ -78,7 +97,7 @@ bool GrindChatShortcutAction::Execute(Event event)
     // the legs (movement strategy): grinding bots roam on their own and kill
     // everything they see. A leash in the grind strategy walks them back when
     // they wander out of the master's react range. Say "follow" or "stay"
-    // after "grind" to change back to escorted or stationary grinding.
+    // afterwards to stop grinding and come back / hold position.
     ai->ChangeStrategy("+grind,+move random,-passive", BOT_STATE_NON_COMBAT);
     if (bot->GetMapId() != master->GetMapId() || bot->GetDistance(master) > sPlayerbotAIConfig.reactDistance)
     {
