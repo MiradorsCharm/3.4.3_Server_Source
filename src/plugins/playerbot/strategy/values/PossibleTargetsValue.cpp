@@ -21,8 +21,15 @@ bool PossibleTargetsValue::AcceptUnit(Unit* unit)
     // Unselectable units (event/quest actors, some bosses mid-script) can be
     // unfriendly yet impossible to attack - targeting them only produces an
     // attack -> instant-drop cycle every AI tick.
-    return unit->IsAlive() &&
-            !unit->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) &&
-            !unit->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) &&
+    //
+    // The 3.3.5 flag the upstream bot was written against, UNIT_FLAG_NOT_SELECTABLE
+    // (bit 0x02000000), is not declared here: this core names that bit
+    // UNIT_FLAG_UNINTERACTIBLE, and answers the whole "can I actually attack it"
+    // question with Unit::isTargetableForAttack() - alive, !UNIT_FLAG_NON_ATTACKABLE,
+    // !IsUninteractible(), not UNIT_STATE_UNATTACKABLE, not a GM.  Delegating to it
+    // keeps the bot in step with the core, which uses the same predicate in
+    // NearestAttackableNoTotemUnitInObjectRangeCheck.  checkFakeDeath is off so a
+    // creature playing dead stays a candidate, exactly as before.
+    return unit->isTargetableForAttack(false) &&
             (unit->IsHostileTo(bot) || (unit->GetLevel() > 1 && !unit->IsFriendlyTo(bot)));
 }

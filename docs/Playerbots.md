@@ -286,6 +286,14 @@ migrations applied during the port:
 * **Loot** — `WorldObject::HasDynamicFlag()`, `CreatureTemplate::GetDifficulty(DIFFICULTY_NONE)->GetRequiredLootSkill()`,
   `Group::CountRollVote(playerGuid, lootObjGuid, lootListId, vote)`.
 * **Talents/specs** — `ActivateTalentGroup()` / `GetActiveTalentGroup()`.
+* **Unit flags** — the 3.3.5 `UNIT_FLAG_NOT_SELECTABLE` (bit 0x02000000) is
+  `UNIT_FLAG_UNINTERACTIBLE` / `Unit::IsUninteractible()` here, and other bits were
+  renamed the same way (`UNIT_FLAG_PVP` → `UNIT_FLAG_PVP_ENABLING`,
+  `UNIT_FLAG_TAXI_FLIGHT` → `UNIT_FLAG_ON_TAXI`,
+  `UNIT_FLAG_DISABLE_MOVE` → `UNIT_FLAG_REMOVE_CLIENT_CONTROL`).  Bot code that asks
+  "can I actually attack this unit?" goes through `Unit::isTargetableForAttack()`
+  instead of hand-rolling the flag test (`PossibleTargetsValue::AcceptUnit`,
+  mirroring the core's own `NearestAttackableNoTotemUnitInObjectRangeCheck`).
 * **Database** — `PQuery`/`PExecute` use `{}` fmt placeholders instead of `%s`/`%u`.
 * **Bit-packed server packets** (e.g. `SMSG_TRADE_STATUS`) are parsed with
   `ResetBitPos()` / `ReadBit()` / `ReadBits(n)`.
