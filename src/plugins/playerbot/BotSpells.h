@@ -48,6 +48,17 @@ public:
     void StartAutoRepeat(uint32 shootSpellId, Unit* target);
     void StopAutoRepeat();
 
+    /// The ranged attack spell the bot's equipped ranged weapon grants:
+    /// Auto Shot (75) for a hunter with a bow/gun/crossbow, Shoot (3018) for
+    /// anyone else with one, Throw (2764) for thrown weapons, Shoot Wand
+    /// (5019) for a wand, 0 with nothing equipped. This is the same rule the
+    /// core's own PlayerAI uses (PlayerAI::DoRangedAttackIfReady) - a class
+    /// table cannot answer it, because it is the *weapon* that decides.
+    uint32 RangedAttackSpell() const;
+    /// Keep the auto-repeat loop alive against a victim: (re)starts it when it
+    /// is not running and nothing better is happening.
+    void MaintainAutoRepeat(Unit* target);
+
     // --- state ---------------------------------------------------------------
     bool IsCasting() const;       // any spell being prepared/cast/channeled
     bool IsHardCasting() const;   // a spell with a cast time (bots must stand still)

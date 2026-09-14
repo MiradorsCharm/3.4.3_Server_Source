@@ -1,5 +1,7 @@
 #include "BotSpells.h"
 
+#include "Item.h"
+#include "ItemTemplate.h"
 #include "Player.h"
 #include "Unit.h"
 #include "SpellAuraDefines.h"
@@ -9,6 +11,17 @@
 #include "Spell.h"
 #include "Map.h"
 #include "Log.h"
+
+namespace
+{
+    // The ranged attack spells, picked by the equipped ranged weapon rather
+    // than by class - the same ids and the same rule the core's own
+    // PlayerAI::DoRangedAttackIfReady uses.
+    constexpr uint32 SPELL_ID_AUTO_SHOT = 75;     // hunter bow/gun/crossbow
+    constexpr uint32 SPELL_ID_SHOOT = 3018;       // non-hunter bow/gun/crossbow
+    constexpr uint32 SPELL_ID_THROW = 2764;       // thrown weapons
+    constexpr uint32 SPELL_ID_SHOOT_WAND = 5019;  // wands (mage/priest/warlock)
+}
 
 bool BotSpells::Known(uint32 spellId) const
 {
@@ -143,16 +156,88 @@ bool BotSpells::IsAutoRepeating() const
     return _bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) != nullptr;
 }
 
+uint32 BotSpells::RangedAttackSpell() const
+{
+    // Shoot/Auto Shot/Throw are properties of the equipped ranged weapon, not
+    // of the class - the core's own PlayerAI resolves them exactly this way
+    // (PlayerAI::DoRangedAttackIfReady). Reading the class instead is why
+    // every wand user (mage, priest, warlock) stood there swinging a staff:
+    // nothing ever told them they owned a ranged attack at all.
+    Item const* ranged = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    ItemTemplate const* proto = ranged ? ranged->GetTemplate() : nullptr;
+    if (!proto)
+        return 0;
+
+    switch (proto->GetSubClass())
+    {
+        case ITEM_SUBCLASS_WEAPON_BOW:
+        case ITEM_SUBCLASS_WEAPON_GUN:
+        case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+            return _bot->HasSpell(SPELL_ID_AUTO_SHOT) ? SPELL_ID_AUTO_SHOT : SPELL_ID_SHOOT;
+        case ITEM_SUBCLASS_WEAPON_THROWN:
+            return SPELL_ID_THROW;
+        case ITEM_SUBCLASS_WEAPON_WAND:
+            return SPELL_ID_SHOOT_WAND;
+        default:
+            return 0;
+    }
+}
+
 void BotSpells::StartAutoRepeat(uint32 shootSpellId, Unit* target)
 {
-    if (!shootSpellId || IsAutoRepeating())
+    if (!shootSpellId)
+        shootSpellId = RangedAttackSpell();
+    if (!shootSpellId || !target)
         return;
-    if (!Known(shootSpellId))
+    if (IsAutoRepeating())
         return;
-    if (!Castable(shootSpellId, target))
-        return;
+
+    // Shoot (3018), Throw (2764) and Shoot Wand (5019) are granted by the
+    // weapon, so a character does not necessarily have them in its spell
+    // book. The core's own PlayerAI casts those as triggered spells, which is
+    // what we do too when the bot does not formally know the spell - going
+    // through the normal cast path would just fail the "does the player know
+    // this" gate and the wand would never fire.
+    bool const known = Known(shootSpellId);
+    if (known)
+    {
+        if (!Castable(shootSpellId, target))
+            return;
+    }
+    else
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(shootSpellId, DIFFICULTY_NONE);
+        if (!info || !BasicTargetCheck(target))
+            return;
+        if (!target->IsValidAttackTarget(_bot))
+            return;
+        if (!InRange(shootSpellId, target) || !_bot->IsWithinLOSInMap(target))
+            return;
+        // a wand shot is dropped by the core the instant the player moves
+        if (_bot->IsNonMeleeSpellCast(false, false, true) || _bot->isMoving())
+            return;
+    }
+
     _bot->SetSelection(target->GetGUID());
-    _bot->CastSpell(target, shootSpellId, false);
+    _bot->CastSpell(target, shootSpellId, !known);
+}
+
+void BotSpells::MaintainAutoRepeat(Unit* target)
+{
+    if (!target)
+        return;
+
+    if (IsAutoRepeating())
+    {
+        // The core owns the loop once it is running; the only thing it does
+        // not do on its own is follow a target switch.
+        Spell* current = _bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
+        if (current && current->m_targets.GetUnitTarget() == target)
+            return;
+        StopAutoRepeat();
+    }
+
+    StartAutoRepeat(RangedAttackSpell(), target);
 }
 
 void BotSpells::StopAutoRepeat()

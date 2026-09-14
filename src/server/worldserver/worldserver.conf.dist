@@ -4660,6 +4660,111 @@ AiPlayerbot.RandomBotUpdateInterval = 30
 AiPlayerbot.RandomBotAccountPrefix = "rndbot"
 
 #
+#    AiPlayerbot.RandomBotSpread
+#        Description: Spread the random pool over the world instead of letting
+#                     it pile up in the starting zones. Placement is derived
+#                     from the creature spawn table: a bot is put next to a
+#                     spawn whose level matches the bot, on a non-instanced
+#                     map, at a spot where few other bots already stand.
+#        Default:     1 - spread the pool by level and occupancy
+#                     0 - leave the characters where they are
+
+AiPlayerbot.RandomBotSpread = 1
+
+#
+#    AiPlayerbot.RandomBotRelocateMinutes
+#        Description: Minutes a random bot may settle in one area before it
+#                     wanders off to another level-matching part of the world.
+#                     Only bots that are out of combat and have no victim move.
+#        Default:     0 - never relocate a settled bot
+
+AiPlayerbot.RandomBotRelocateMinutes = 0
+
+#
+#    AiPlayerbot.RandomBotCreateBatch
+#        Description: How many new bot characters the pool audit creates per
+#                     interval when it needs to grow. Kept small on purpose:
+#                     creating a character costs a database round trip.
+#        Default:     5
+
+AiPlayerbot.RandomBotCreateBatch = 5
+
+#
+#    AiPlayerbot.HopelessLevelGap
+#        Description: A bot in combat with a creature this many levels above
+#                     it stops fighting and runs instead. Retaliating against
+#                     a hopeless target only produces stall reports: the bot
+#                     stands in range, faces the mob, attacks - and cannot
+#                     land a single hit. 0 disables the check.
+#        Default:     5
+
+AiPlayerbot.HopelessLevelGap = 5
+
+#
+#    AiPlayerbot.CastRetryMs
+#        Description: Milliseconds between two evaluations of the combat
+#                     rotation. The old value (600) was long enough for a
+#                     ranged bot to visibly idle between shots.
+#        Default:     150 - range 50 to 2000
+
+AiPlayerbot.CastRetryMs = 150
+
+#
+#    AiPlayerbot.PersistBots
+#        Description: Remember which characters were bots, who owned them and
+#                     what they had been told to do, in characters_playerbot.
+#                     On the next start the roster comes back at the position
+#                     the core saved for it, with the roles it had. Turn this
+#                     off to start every boot with a clean slate.
+#        Default:     1 - save and restore bot state
+
+AiPlayerbot.PersistBots = 1
+
+#
+#    AiPlayerbot.StateSaveIntervalMs
+#        Description: Milliseconds between two periodic state saves while the
+#                     server runs. A crash loses at most one interval.
+#        Default:     60000 - minimum 5000
+
+AiPlayerbot.StateSaveIntervalMs = 60000
+
+#
+#    AiPlayerbot.RestoreRandomBots
+#        Description: Bring the saved random pool back on start. Only used
+#                     when RandomBotCount is greater than 0; with the pool
+#                     disabled nothing is resurrected from the saved roster.
+#        Default:     1 - restore the saved pool
+
+AiPlayerbot.RestoreRandomBots = 1
+
+#
+#    AiPlayerbot.LoginStaggerMs
+#        Description: Minimum pause between two bot logins. A bot login reads
+#                     a whole character from the database and, the first time,
+#                     prepares it (spells, gear, talents). Releasing the whole
+#                     pool in a single tick is what used to freeze the world
+#                     for a minute after every start.
+#        Default:     400 - 0 logs the pool in as fast as it can
+
+AiPlayerbot.LoginStaggerMs = 400
+
+#
+#    AiPlayerbot.MaxConcurrentLogins
+#        Description: How many bot logins may be in flight at the same time.
+#        Default:     3 - minimum 1
+
+AiPlayerbot.MaxConcurrentLogins = 3
+
+#
+#    AiPlayerbot.StartupLoginDelayMs
+#        Description: Grace period after boot before the first bot logs in.
+#                     The world needs a moment to settle (maps, grids, the
+#                     first real players) before a pool of hundreds arrives.
+#        Default:     15000
+
+AiPlayerbot.StartupLoginDelayMs = 15000
+
+#
 ###################################################################################################
 ###################################################################################################
 ############################################################################

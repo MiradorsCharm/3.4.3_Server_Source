@@ -329,5 +329,179 @@ class AdvancedServicesTest(unittest.TestCase):
         self.assertIn("CommandQuests", ai)
 
 
+class RestartAndSpreadTest(unittest.TestCase):
+    """A restart must bring the same bots back where they were, and the pool
+    must not arrive all at once or all in the same starter zone.
+
+    These are the invariants behind 'every server start spawns 500 bots and
+    the world freezes' and 'all 50 bots stand in Goldshire'."""
+
+    def test_logins_are_paced_not_bursted(self):
+        manager = (PLUGIN / "BotManager.cpp").read_text(encoding="utf-8", errors="replace")
+        # AddBot must queue; only StartLogin touches the session
+        self.assertIn("_loginQueue.push_back(entry)", manager,
+                      "AddBot logs in immediately - the startup burst is back")
+        self.assertIn("void BotManager::StartLogin", manager)
+        for needle in ("MaxConcurrentLogins", "LoginStaggerMs", "_startupDelayMs"):
+            self.assertIn(needle, manager, f"login pacing knob {needle} is not used")
+        # the audit must not re-queue what is already on the way
+        self.assertIn("for (QueuedLogin const& queued : _loginQueue)", manager)
+
+    def test_a_wedged_login_cannot_stall_the_queue(self):
+        # MaxConcurrentLogins slots are a hard limit, so a login that never
+        # finishes would permanently block the rest of the pool.
+        manager = (PLUGIN / "BotManager.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("PENDING_LOGIN_TIMEOUT_MS", manager)
+        self.assertIn("pending.ageMs >= PENDING_LOGIN_TIMEOUT_MS", manager)
+        self.assertIn("releasing the slot", manager)
+        # the half-open session must go too, or the character stays "online"
+        self.assertIn("for (ObjectGuid guid : timedOut)", manager)
+        self.assertIn("DestroySession(guid)", manager)
+
+    def test_state_is_saved_and_restored(self):
+        manager = (PLUGIN / "BotManager.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("BotState::EnsureSchema()", manager)
+        self.assertIn("SaveAllStates()", manager)
+        self.assertIn("RestoreRoster()", manager)
+        self.assertIn("ai->ApplySavedState(saved)", manager,
+                      "a bot comes back with no memory of its orders")
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("BotState::Save", ai)
+        # a bot's position/level only survives if the character is actually saved
+        self.assertIn("bot->SaveToDB()", manager)
+
+    def test_pool_is_placed_by_level_across_the_world(self):
+        manager = (PLUGIN / "BotManager.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("BotSpawns::PlaceRandomBot(bot, 250.0f)", manager,
+                      "random bots are never moved off the starter-zone crowd")
+        spawns = (PLUGIN / "BotSpawns.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("GetAllCreatureData", spawns,
+                      "placement must come from the world's own spawn table")
+        self.assertIn("Instanceable", spawns)
+        self.assertIn("CREATURE_TYPE_CRITTER", spawns)
+        # no hardcoded coordinates: placement is derived, never baked in
+        self.assertNotRegex(spawns, r"\b-?8949\.\d", "hardcoded Goldshire-ish coordinate found")
+        header = (PLUGIN / "BotSpawns.h").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("PlaceRandomBot", header)
+
+    def test_state_schema_matches_the_sql_file(self):
+        state = (PLUGIN / "BotState.cpp").read_text(encoding="utf-8", errors="replace")
+        sql = (REPO / "sql" / "custom" / "playerbot" / "characters_playerbot.sql").read_text(
+            encoding="utf-8", errors="replace")
+        for column in ("random_bot", "tank_mode", "grind_mode", "stay_x", "stay_y",
+                       "stay_z", "prepared_level", "last_seen"):
+            self.assertIn(column, state, f"{column} is written by the code but not in the schema")
+            self.assertIn(column, sql, f"{column} is missing from characters_playerbot.sql")
+
+
+class RangedCombatTest(unittest.TestCase):
+    """'None of the bots cast, they only auto-attack.'
+
+    The ranged attack spell belongs to the equipped weapon, not the class, and
+    it is not in the spell book - so it has to be cast triggered, and the
+    auto-repeat loop has to be re-asserted while the bot stands in band."""
+
+    def test_ranged_attack_spell_is_resolved_from_the_weapon(self):
+        spells = (PLUGIN / "BotSpells.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("RangedAttackSpell", spells)
+        self.assertIn("SPELL_ID_SHOOT", spells, "shoot (3018) must be the fallback for bow/gun/crossbow")
+        for weapon_case in ("ITEM_SUBCLASS_WEAPON_BOW", "ITEM_SUBCLASS_WEAPON_GUN",
+                            "ITEM_SUBCLASS_WEAPON_CROSSBOW", "ITEM_SUBCLASS_WEAPON_THROWN",
+                            "ITEM_SUBCLASS_WEAPON_WAND"):
+            self.assertIn(weapon_case, spells, f"{weapon_case} is not handled")
+        header = (PLUGIN / "BotSpells.h").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("RangedAttackSpell", header)
+
+    def test_ranged_attack_is_cast_triggered_when_unknown(self):
+        spells = (PLUGIN / "BotSpells.cpp").read_text(encoding="utf-8", errors="replace")
+        # shoot spells are not in the spell book, so a plain cast would be rejected
+        self.assertIn("bool const known = Known(shootSpellId)", spells)
+        self.assertIn("CastSpell(target, shootSpellId, !known)", spells,
+                      "the shoot spell must be cast triggered when the bot does not know it")
+
+    def test_auto_repeat_loop_is_maintained_in_band(self):
+        combat = (PLUGIN / "BotCombat.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("MaintainAutoRepeat(victim)", combat,
+                      "the wand/auto-shot loop is cancelled on movement and never restarted")
+        self.assertIn("CastRetryMs", combat, "the rotation must not idle 600ms between shots")
+        self.assertIn("CastMinDistance", combat, "minRange must be fed by the config")
+
+
+class StalledFightTest(unittest.TestCase):
+    """'Bot Perena stalled 4s on Demolitionist Legoso: ... atk=1 swingErr=none
+    ... reason=retaliate' - the bot was in range, attacking, and could not
+    hurt the mob. A player runs from a fight like that."""
+
+    def test_hopeless_fights_are_abandoned(self):
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("HopelessLevelGap", ai)
+        self.assertIn("FleeFrom(attacker", ai,
+                      "UpdateRetaliate must give up instead of standing there")
+        combat = (PLUGIN / "BotCombat.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("FleeFrom", combat)
+        self.assertIn("UpdateFlee", ai)
+
+    def test_fleeing_blocks_immediate_reengagement(self):
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertRegex(ai, r"if \(_fleeTimer > 0\)\s*\n\s*return;",
+                         "UpdateRetaliate re-acquires the victim it is running from")
+
+    def test_invalid_spells_are_never_learned(self):
+        factory = (PLUGIN / "BotFactory.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("SpellMgr::IsSpellValid", factory,
+                      "AddSpell(ID) is invalid spam: the spell list is not validated")
+        self.assertIn("SPELL_EFFECT_NONE", factory)
+        # SPELL_EFFECT_NULL does not exist in this core - it would not compile
+        self.assertNotIn("SPELL_EFFECT_NULL", plugin_text())
+
+
+class GroupChatCommandTest(unittest.TestCase):
+    """'All commands must work in group chat, not only whisper.'"""
+
+    def test_group_members_may_command_the_bot(self):
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("group->IsMember(sender->GetGUID())", ai,
+                      "only the bound master can command the bot")
+
+    def test_chat_is_routed_beyond_the_master(self):
+        manager = (PLUGIN / "BotManager.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("ai->AcceptsCommandsFrom(sender)", manager,
+                      "party/raid chat still only reaches the master's own bots")
+
+    def test_bot_can_reply_on_the_chat_channel(self):
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("CHAT_MSG_PARTY_LEADER", ai,
+                      "party replies need the core's leader/normal distinction")
+        self.assertIn("BroadcastPacket", ai)
+        self.assertIn("_bot->Whisper(text, LANG_UNIVERSAL, to)", ai)
+
+    def test_command_set_covers_the_mangosbot_vocabulary(self):
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        lowered = ai.lower()
+        # adapted from ike3/mangosbot's ChatTriggerContext creator map
+        for word in ("follow", "stay", "flee", "grind", "tank attack", "attack my target",
+                     "max dps", "save mana", "add all loot", "repair", "talents", "spells",
+                     "revive", "release", "summon", "who", "position", "formation",
+                     "reset ai", "invite", "emote", "buy "):
+            self.assertIn(word, lowered, f"command '{word}' is missing from the vocabulary")
+
+
+class SplinePathTest(unittest.TestCase):
+    """'MoveSplineInitArgs::Validate: expression _checkPathLengths() failed'.
+
+    The validator rejects any two consecutive middle points closer than 0.1yd,
+    and a failed Validate makes Launch return 0 - the bot never moves at all."""
+
+    def test_degenerate_path_points_are_pruned_at_the_source(self):
+        spline = (REPO / "src" / "server" / "game" / "Movement" / "Spline"
+                  / "MoveSplineInit.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("MIN_SPLINE_SEGMENT_LENGTH", spline)
+        self.assertIn("PruneDegeneratePathPoints", spline)
+        self.assertIn("MovebyPath", spline,
+                      "MoveTo must prune before handing the path to the spline")
+        self.assertRegex(spline, r"0\.1f",
+                         "the prune threshold must match the core's 0.1 yard check")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

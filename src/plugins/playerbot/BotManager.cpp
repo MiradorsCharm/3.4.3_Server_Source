@@ -5,6 +5,8 @@
 #include "BotFactory.h"
 #include "BotInteract.h"
 #include "BotQueues.h"
+#include "BotSpawns.h"
+#include "BotState.h"
 #include "Player.h"
 #include "WorldSession.h"
 #include "Server/Packets/MovementPackets.h"
@@ -73,9 +75,17 @@ void BotManager::DestroySession(ObjectGuid guid)
     {
         if (BotAI* ai = bot->GetBotAI())
         {
+            // remember what this bot was doing before we take it down, so the
+            // next start brings it back the way it was
+            ai->SaveState();
             bot->SetBotAI(nullptr);
             delete ai;
         }
+        // Belt and braces: the position/level/gear of a bot live in the
+        // characters table and are only written on a real save. A bot session
+        // is not in the world session map, so nothing else guarantees this
+        // happens before the maps go away.
+        bot->SaveToDB();
         TC_LOG_INFO("playerbot", "Bot {} logged out", bot->GetName());
         session->LogoutPlayer(true);
     }
@@ -89,6 +99,34 @@ bool BotManager::AddBot(ObjectGuid guid, ObjectGuid masterGuid, bool random)
 
     if (_sessions.count(guid) || _pending.count(guid))
         return true;    // already online or on the way
+
+    for (QueuedLogin const& queued : _loginQueue)
+        if (queued.guid == guid)
+            return true;
+
+    QueuedLogin entry;
+    entry.guid = guid;
+    entry.master = masterGuid;
+    entry.random = random;
+    _loginQueue.push_back(entry);
+    return true;
+}
+
+bool BotManager::AddBotNow(ObjectGuid guid, ObjectGuid masterGuid, bool random)
+{
+    if (!sBotConfig->Enabled || !guid.IsPlayer())
+        return false;
+
+    if (_sessions.count(guid) || _pending.count(guid))
+        return true;    // already online or on the way
+
+    // drop a stale queue entry so the bot is not logged in twice
+    for (auto it = _loginQueue.begin(); it != _loginQueue.end(); ++it)
+        if (it->guid == guid)
+        {
+            _loginQueue.erase(it);
+            break;
+        }
 
     // must not be online with a real client
     if (Player* existing = ObjectAccessor::FindConnectedPlayer(guid))
@@ -108,23 +146,56 @@ bool BotManager::AddBot(ObjectGuid guid, ObjectGuid masterGuid, bool random)
         return false;
     }
 
-    PendingLogin pending;
-    pending.guid = guid;
-    pending.master = masterGuid;
-    pending.random = random;
-    _pending[guid] = pending;
-
-    CreateBotSession(guid);
+    QueuedLogin entry;
+    entry.guid = guid;
+    entry.master = masterGuid;
+    entry.random = random;
+    StartLogin(entry);
     return true;
 }
 
-void BotManager::ProcessPendingLogins()
+void BotManager::StartLogin(QueuedLogin const& entry)
+{
+    if (_sessions.count(entry.guid) || _pending.count(entry.guid))
+        return;
+
+    // must not be online with a real client
+    if (Player* existing = ObjectAccessor::FindConnectedPlayer(entry.guid))
+    {
+        if (!existing->GetBotAI())
+            TC_LOG_ERROR("playerbot", "Bot {} is already online", entry.guid.ToString());
+        return;
+    }
+
+    CharacterCacheEntry const* cache = sCharacterCache->GetCharacterCacheByGuid(entry.guid);
+    if (!cache || cache->IsDeleted)
+    {
+        TC_LOG_ERROR("playerbot", "Cannot add bot {}: character not found", entry.guid.ToString());
+        return;
+    }
+
+    PendingLogin pending;
+    pending.guid = entry.guid;
+    pending.master = entry.master;
+    pending.random = entry.random;
+    _pending[entry.guid] = pending;
+
+    CreateBotSession(entry.guid);
+}
+
+void BotManager::ProcessPendingLogins(uint32 diff)
 {
     if (_pending.empty())
         return;
 
+    // A login that never finishes must not hold a slot forever: with
+    // MaxConcurrentLogins in flight, a handful of wedged characters would
+    // stall the whole queue and the pool would never come back.
+    static constexpr uint32 const PENDING_LOGIN_TIMEOUT_MS = 30000;
+
     std::vector<ObjectGuid> done;
-    for (auto const& [guid, pending] : _pending)
+    std::vector<ObjectGuid> timedOut;
+    for (auto& [guid, pending] : _pending)
     {
         auto it = _sessions.find(guid);
         if (it == _sessions.end())
@@ -144,12 +215,19 @@ void BotManager::ProcessPendingLogins()
             bot = session->GetPlayer();
         }
 
+        pending.ageMs += diff;
+
         if (bot && bot->IsInWorld())
         {
             BotAI* ai = new BotAI(bot);
             bot->SetBotAI(ai);
             ai->SetRandomBot(pending.random);
             ai->SetGrind(pending.random && sBotConfig->Grind);
+
+            // Roles and orders survive a restart; the position does too, but
+            // that one is the core's own job (characters.position_*).
+            BotSavedState const saved = BotState::Load(guid);
+            ai->ApplySavedState(saved);
 
             // Gear/spell prep first (it saves the character), then the
             // summon - otherwise the save races the pending teleport.
@@ -170,15 +248,37 @@ void BotManager::ProcessPendingLogins()
                             master->GetPositionZ(), master->GetOrientation());
                 }
             }
+            else if (pending.random)
+            {
+                // Unowned pool bot: put it where a bot of its level belongs
+                // instead of on top of the starting-zone crowd.
+                BotSpawns::NoteOccupancy(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY());
+                BotSpawns::PlaceRandomBot(bot, 250.0f);
+            }
 
-            TC_LOG_INFO("playerbot", "Bot {} entered the world{}",
-                bot->GetName(), pending.random ? " (random)" : "");
+            TC_LOG_INFO("playerbot", "Bot {} entered the world{} (level {})",
+                bot->GetName(), pending.random ? " (random)" : "", uint32(bot->GetLevel()));
             done.push_back(guid);
+        }
+        else if (pending.ageMs >= PENDING_LOGIN_TIMEOUT_MS)
+        {
+            // The character would not come in. Give the slot back rather than
+            // letting this login occupy one of the MaxConcurrentLogins
+            // forever - a few bad characters must not stall the whole pool.
+            TC_LOG_ERROR("playerbot", "Bot login {} did not enter the world within {} ms; releasing the slot",
+                guid.ToString(), pending.ageMs);
+            done.push_back(guid);
+            timedOut.push_back(guid);
         }
     }
 
     for (ObjectGuid guid : done)
         _pending.erase(guid);
+
+    // Drop the half-open session too, so the character is not left "online"
+    // with no AI driving it (which would also block the next login attempt).
+    for (ObjectGuid guid : timedOut)
+        DestroySession(guid);
 }
 
 void BotManager::RemoveBot(ObjectGuid guid)
@@ -319,7 +419,7 @@ void BotManager::EnsureRandomBotPool()
 
     // create accounts+characters until the pool is big enough (best effort,
     // a few per audit so a cold start does not hammer the database)
-    uint32 const need = std::min<uint32>(target - uint32(pool.size()), 5);
+    uint32 const need = std::min<uint32>(target - uint32(pool.size()), sBotConfig->RandomBotCreateBatch);
     uint32 const classCount = 9; // warrior..druid (DKs are excluded from random pools)
     time_t const now = time(nullptr);
 
@@ -409,7 +509,18 @@ void BotManager::AuditRandomBots()
         _logoutQueue.push_back(victim->GetGUID());
     }
 
-    if (randomOnline.size() < target)
+    // Logins already on the way count toward the target too - without this the
+    // audit re-queues the whole gap every interval while the paced login queue
+    // is still draining.
+    uint32 incoming = uint32(randomOnline.size());
+    for (auto const& [guid, pending] : _pending)
+        if (pending.random)
+            ++incoming;
+    for (QueuedLogin const& queued : _loginQueue)
+        if (queued.random)
+            ++incoming;
+
+    if (incoming < target)
     {
         EnsureRandomBotPool();
 
@@ -418,20 +529,69 @@ void BotManager::AuditRandomBots()
         for (size_t i = pool.size(); i > 1; --i)
             std::swap(pool[i - 1], pool[urand(0, uint32(i) - 1)]);
 
-        // pending logins count toward the target; never queue more than the
-        // remaining gap (and never put placeholder entries in randomOnline -
-        // the trim above would dereference them on the next audit)
-        uint32 online = uint32(randomOnline.size());
+        // never queue more than the remaining gap
         for (ObjectGuid guid : pool)
         {
-            if (online >= target)
+            if (incoming >= target)
                 break;
             if (_sessions.count(guid) || _pending.count(guid))
                 continue;
             if (!AddBot(guid, ObjectGuid::Empty, true))
                 continue;
-            ++online;
+            ++incoming;
         }
+    }
+}
+
+void BotManager::RestoreRoster()
+{
+    if (_rosterRestored)
+        return;
+    _rosterRestored = true;
+
+    if (!sBotConfig->PersistBots)
+        return;
+
+    std::vector<BotSavedState> saved;
+    if (!BotState::LoadAll(saved) || saved.empty())
+        return;
+
+    uint32 queued = 0;
+    for (BotSavedState const& state : saved)
+    {
+        if (!state.guid.IsPlayer())
+            continue;
+
+        // Random pool bots come back through the pool audit (which respects
+        // RandomBotCount) - unless the operator turned the pool off, in which
+        // case restoring them would resurrect a crowd nobody asked for.
+        if (state.random && !(sBotConfig->RestoreRandomBots && GetRandomBotTarget() > 0))
+            continue;
+
+        // A bot whose master is offline waits for that master's login instead
+        // of appearing on its own.
+        if (!state.random && !state.master.IsEmpty() && !ObjectAccessor::FindConnectedPlayer(state.master))
+            continue;
+
+        if (AddBot(state.guid, state.master, state.random))
+            ++queued;
+    }
+
+    if (queued)
+        TC_LOG_INFO("playerbot", "{} bot(s) queued to come back where they left off", queued);
+}
+
+void BotManager::SaveAllStates()
+{
+    if (!sBotConfig->PersistBots)
+        return;
+
+    for (auto const& [guid, session] : _sessions)
+    {
+        (void)guid;
+        if (Player* bot = session->GetPlayer())
+            if (BotAI* ai = bot->GetBotAI())
+                ai->SaveState();
     }
 }
 
@@ -455,8 +615,33 @@ void BotManager::Update(uint32 diff)
             RouteChat(chat);
     }
 
+    // --- login pacing --------------------------------------------------------
+    // A bot login reads a whole character from the database and, the first
+    // time, prepares it. Releasing the whole pool in a single tick is what
+    // used to freeze the world for a minute after every start, so logins are
+    // metered: at most MaxConcurrentLogins in flight, one every LoginStaggerMs,
+    // and nothing at all until the startup grace period is over.
+    if (_startupDelayMs > diff)
+        _startupDelayMs -= diff;
+    else
+        _startupDelayMs = 0;
+
+    if (_loginGateMs > diff)
+        _loginGateMs -= diff;
+    else
+        _loginGateMs = 0;
+
+    while (_startupDelayMs == 0 && _loginGateMs == 0 && !_loginQueue.empty()
+        && _pending.size() < sBotConfig->MaxConcurrentLogins)
+    {
+        QueuedLogin entry = _loginQueue.front();
+        _loginQueue.pop_front();
+        StartLogin(entry);
+        _loginGateMs = sBotConfig->LoginStaggerMs;
+    }
+
     // pending logins first: they become bots within a tick or two
-    ProcessPendingLogins();
+    ProcessPendingLogins(diff);
 
     // pump every live session
     std::vector<ObjectGuid> sessions;
@@ -525,6 +710,22 @@ void BotManager::Update(uint32 diff)
         DestroySession(guid);
     }
 
+    // periodic state save: roles, orders and the stay point, so a crash loses
+    // at most one interval of them
+    if (sBotConfig->PersistBots)
+    {
+        _stateSaveTimer += diff;
+        if (_stateSaveTimer >= sBotConfig->StateSaveIntervalMs)
+        {
+            _stateSaveTimer = 0;
+            SaveAllStates();
+        }
+    }
+
+    // the roster that was online when the server went down comes back first,
+    // on the same paced login queue as everything else
+    RestoreRoster();
+
     // random bot pool audit
     _randomAuditTimer += diff;
     if (_randomAuditTimer >= sBotConfig->RandomBotUpdateInterval * IN_MILLISECONDS)
@@ -574,15 +775,23 @@ void BotManager::RouteChat(QueuedChat const& chat)
         return;
     }
 
-    // party/raid/say commands: route to bots whose master is the sender
+    // Party/raid/say commands. The master is always obeyed; so is anyone else
+    // in the group - a bot you are grouped with should answer you, which is
+    // what makes leading a raid of bots possible at all. "say" reaches the
+    // bots standing next to the speaker.
+    Group* group = sender->GetGroup();
     for (Player* bot : GetAllBots())
     {
         BotAI* ai = bot->GetBotAI();
         if (!ai)
             continue;
-        if (Player* master = ai->GetMaster())
-            if (master == sender)
-                ai->HandleCommand(chat.msg, sender);
+
+        bool const addressed = (ai->GetMaster() == sender)
+            || (group && ai->AcceptsCommandsFrom(sender))
+            || (chat.type == CHAT_MSG_SAY && bot->IsWithinDistInMap(sender, sBotConfig->SightDistance));
+
+        if (addressed)
+            ai->HandleCommand(chat.msg, sender);
     }
 }
 
@@ -594,17 +803,14 @@ void BotManager::PersistBot(ObjectGuid botGuid, ObjectGuid masterGuid)
 {
     if (botGuid.IsEmpty() || masterGuid.IsEmpty())
         return;
-    CharacterDatabase.PExecute(
-        "REPLACE INTO characters_playerbot (guid, master) VALUES ({}, {})",
-        botGuid.GetCounter(), masterGuid.GetCounter());
+    BotState::SetMaster(botGuid, masterGuid);
 }
 
 void BotManager::ForgetBot(ObjectGuid botGuid)
 {
     if (botGuid.IsEmpty())
         return;
-    CharacterDatabase.PExecute(
-        "DELETE FROM characters_playerbot WHERE guid = {}", botGuid.GetCounter());
+    BotState::Forget(botGuid);
 }
 
 void BotManager::LoadBotsForMaster(Player* master)
@@ -613,7 +819,7 @@ void BotManager::LoadBotsForMaster(Player* master)
         return;
 
     QueryResult result = CharacterDatabase.PQuery(
-        "SELECT guid FROM characters_playerbot WHERE master = {}", master->GetGUID().GetCounter());
+        "SELECT guid FROM characters_playerbot WHERE master = {} AND random_bot = 0", master->GetGUID().GetCounter());
     if (!result)
         return;
 
@@ -624,7 +830,9 @@ void BotManager::LoadBotsForMaster(Player* master)
         ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(low);
         if (!guid.IsPlayer())
             continue;
-        if (AddBot(guid, master->GetGUID(), false))
+        // A player is waiting for their own bots: let these jump the login
+        // queue instead of sitting behind the random pool.
+        if (AddBotNow(guid, master->GetGUID(), false))
             ++loaded;
     } while (result->NextRow() && loaded < 5);
 
@@ -745,13 +953,14 @@ bool BotManager::Initialize()
     hooks.OnPlayerLogin = &HookPlayerLogin;
     Playerbot::SetEnabled(true);
 
-    // bot->master bindings for auto re-login; also in the schema sql file
-    CharacterDatabase.Execute(
-        "CREATE TABLE IF NOT EXISTS characters_playerbot ("
-        "guid INT UNSIGNED NOT NULL,"
-        "master INT UNSIGNED NOT NULL,"
-        "PRIMARY KEY(guid)"
-        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    // bot->master bindings, roles and the stay point; also in the schema sql
+    // file. EnsureSchema adds whatever an older build's table is missing.
+    BotState::EnsureSchema();
+
+    // Nothing logs in before this is up: the world needs a moment to settle
+    // after boot (maps, grids, the first real players) before a pool arrives.
+    _startupDelayMs = sBotConfig->StartupLoginDelayMs;
+    _loginGateMs = 0;
 
     // ensure the names table exists so random bot creation works out of the box
     CharacterDatabase.Execute(
@@ -770,6 +979,13 @@ void BotManager::Shutdown()
 {
     _shuttingDown = true;
     Playerbot::SetEnabled(false);
+
+    // Everything the bots were doing goes to the database before the sessions
+    // come down - this is what makes the next start restore the same world
+    // (same roster, same places, same orders) instead of a fresh crowd.
+    SaveAllStates();
+    _loginQueue.clear();
+
     for (auto const& [guid, session] : _sessions)
         _logoutQueue.push_back(guid);
     while (!_logoutQueue.empty())

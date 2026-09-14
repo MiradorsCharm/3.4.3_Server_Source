@@ -35,6 +35,10 @@ namespace BotInteract
     /// an auction house when close enough ("sell" whisper); fills reply
     bool SellJunk(Player* bot, std::string& reply);
 
+    /// buy an item by (partial) name from the vendor we are standing at
+    /// ("buy <name>" command); fills reply
+    bool BuyItemByName(Player* bot, std::string const& wanted, std::string& reply);
+
     /// take every quest of the master's log we qualify for ("quests" whisper)
     uint32 TakeMastersQuests(Player* bot, Player* master);
 

@@ -65,6 +65,35 @@ public:
     uint32 RandomBotUpdateInterval = 30;   // seconds between pool audits
     std::string RandomBotAccountPrefix = "rndbot";
 
+    /// --- login pacing --------------------------------------------------------
+    /// Logging a bot in loads a whole character from the database and (the
+    /// first time) prepares it. Doing hundreds of those in one tick is what
+    /// used to freeze the world for a minute after every start.
+    uint32 LoginStaggerMs = 400;     // minimum pause between two bot logins
+    uint32 MaxConcurrentLogins = 3;  // how many logins may be in flight at once
+    uint32 StartupLoginDelayMs = 15000;  // grace period after boot before the pool fills
+
+    /// --- persistence ---------------------------------------------------------
+    /// Bots remember that they were online, where they stood and what they were
+    /// told to do, so a restart brings back the same world instead of a fresh
+    /// crowd. Position itself is the core's own (characters.position_*), saved
+    /// on logout; this keeps the roster and the AI flags next to it.
+    bool PersistBots = true;
+    uint32 StateSaveIntervalMs = 60000;    // periodic state save while running
+    bool RestoreRandomBots = true;         // bring the saved random pool back on start
+
+    /// --- world spread --------------------------------------------------------
+    /// Random bots are placed (and periodically relocated) at level-matching
+    /// spots all over the world instead of piling into their starting zones.
+    bool RandomBotSpread = true;
+    uint32 RandomBotRelocateMinutes = 0;   // 0 = never move a settled bot
+    uint32 RandomBotCreateBatch = 5;       // new bot characters created per audit
+
+    /// --- combat sanity -------------------------------------------------------
+    /// A bot that cannot hurt its attacker is not "stalled", it is outmatched.
+    int32 HopelessLevelGap = 5;      // victim this many levels above us: give up
+    uint32 CastRetryMs = 150;        // how often the rotation is re-evaluated
+
     /// Once per process: characters of accounts with this prefix are bots.
     std::string BotAccountPrefix = "rndbot";
 

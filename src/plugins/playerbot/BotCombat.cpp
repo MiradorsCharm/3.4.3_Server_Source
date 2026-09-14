@@ -103,6 +103,19 @@ void BotCombat::Update(uint32 diff)
         return;
     }
 
+    // A fight we cannot win is not a stall, it is a mistake. Retaliating
+    // against something fifteen levels above us is what filled the log with
+    // "Bot X stalled ... reason=retaliate": the bot was in range, facing,
+    // attacking - and every swing missed. Run instead.
+    if (sBotConfig->HopelessLevelGap > 0 && victim->ToCreature() && !victim->ToPlayer() && !victim->ToPet())
+    {
+        if (int32(victim->GetLevel()) - int32(_bot->GetLevel()) > sBotConfig->HopelessLevelGap)
+        {
+            _ai->FleeFrom(victim, "hopeless fight");
+            return;
+        }
+    }
+
     // Start the melee attack state once per victim. Starting it early is what
     // a player client does: the server shows the combat stance while we run
     // in, and Player::Update's DoMeleeAttackIfReady simply waits for range.
@@ -132,17 +145,29 @@ void BotCombat::Update(uint32 diff)
             _interruptPaceCooldown = 800;   // brief pace so we don't fan the whole kit at once
     }
 
-    // Class script runs once per GCD-ish window whenever we are not standing
+    // Class script runs on a short retry window whenever we are not standing
     // in a hard cast (the cast holds the floor by itself - the script's casts
     // set CURRENT_GENERIC_SPELL and the next window sees IsCasting()). The
-    // window also keeps failed casts (out of range by a hair, NO_AMMO, ...)
-    // from being re-attempted every tick.
+    // window used to be a fixed 600ms, which was long enough that an ability
+    // coming off a 1.5s GCD sat idle for nearly half a second every time; the
+    // core's own cooldown/GCD gate is what actually paces the casts, so the
+    // retry can be much tighter.
     if (_castPaceCooldown == 0 && !_ai->GetSpells().IsHardCasting())
     {
-        _castPaceCooldown = 600;
-        if (_ai->IsTankMode())
-            _ai->GetClassAI().TankTick(*_ai);   // taunts/presence before the rotation
-        _ai->GetClassAI().CombatTick(*_ai);
+        _castPaceCooldown = sBotConfig->CastRetryMs;
+
+        // "save mana": hold the rotation back while resources run low and let
+        // the ranged attack carry the fight. "max dps" never holds back.
+        bool const conserving = _ai->IsConservingMana() && !_ai->IsMaxDps()
+            && _bot->GetPowerType() == POWER_MANA && _bot->GetPowerPct(POWER_MANA) < 30.0f;
+        if (!conserving)
+        {
+            if (_ai->IsTankMode())
+                _ai->GetClassAI().TankTick(*_ai);   // taunts/presence before the rotation
+            _ai->GetClassAI().CombatTick(*_ai);
+        }
+        else if (_stance == BotCombatStance::Ranged)
+            _ai->GetSpells().MaintainAutoRepeat(victim);
     }
 }
 
@@ -177,7 +202,12 @@ void BotCombat::UpdateRanged(Unit* victim, uint32 /*diff*/)
     float const dist = _bot->GetExactDist(victim);
 
     float const standRange = std::min(sBotConfig->CastStandDistance, sBotConfig->SpellDistance);
-    float const minRange = std::max(_ai->GetClassAI().GetMinRange(), 0.5f);
+    // The dead zone is the larger of what the class/weapon needs (a hunter
+    // cannot shoot inside 5yd) and the configured stand-off floor. Reading only
+    // the class value left AiPlayerbot.CastMinDistance dead: casters happily
+    // stood inside a mob's swing range and got chewed while their rotation
+    // fought the melee hits for the GCD.
+    float const minRange = std::max(_ai->GetClassAI().GetMinRange(), std::max(0.5f, sBotConfig->CastMinDistance));
 
     if (dist > standRange)
     {
@@ -222,4 +252,11 @@ void BotCombat::UpdateRanged(Unit* victim, uint32 /*diff*/)
     // Inside the band: stand, face, shoot.
     mover.Stop();
     mover.Face(victim);
+
+    // Keep the wand/auto-shot loop alive. It has to be re-armed from here and
+    // not only from the class script: Unit::_UpdateAutoRepeatSpell drops the
+    // loop every time the bot moves or hard-casts, and a caster whose whole
+    // rotation is on cooldown (or out of mana) would otherwise fall completely
+    // silent instead of shooting.
+    _ai->GetSpells().MaintainAutoRepeat(victim);
 }

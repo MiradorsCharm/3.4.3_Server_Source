@@ -1,6 +1,7 @@
 #include "BotFactory.h"
 
 #include "BotConfig.h"
+#include "BotState.h"
 #include "BotTalents.h"
 #include "Player.h"
 #include "MotionMaster.h"
@@ -23,6 +24,7 @@
 #include "Container/Bag.h"
 
 #include <functional>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -91,12 +93,50 @@ namespace
     // failed with "[1146] Table 'world.item_template' doesn't exist" and the
     // bot ended up naked. We instead scan the in-memory template store, which
     // is both correct for this core and far cheaper than a DB round trip.
+    // The item template store is a few ten-thousand entries wide and this scan
+    // runs once per equipment slot. Doing that for every bot on every login is
+    // what made a large pool turn startup into a freeze (14 scans x 500 bots x
+    // ~40k templates). The answer only depends on class/race/level and on what
+    // we are looking for, so it is memoised.
+    std::unordered_map<uint64, uint32>& ItemLookupCache()
+    {
+        static std::unordered_map<uint64, uint32> cache;
+        return cache;
+    }
+
+    uint64 MakeItemCacheKey(uint8 cls, uint8 race, uint32 level, uint32 itemClass,
+        uint32 inventoryType, std::vector<uint32> const& subclasses)
+    {
+        uint64 key = 14695981039346656037ull;                 // FNV-1a offset basis
+        auto mix = [&key](uint64 value)
+        {
+            for (int i = 0; i < 8; ++i)
+            {
+                key ^= (value >> (i * 8)) & 0xFFull;
+                key *= 1099511628211ull;
+            }
+        };
+        mix(cls);
+        mix(race);
+        mix(level);
+        mix(itemClass);
+        mix(inventoryType);
+        for (uint32 subclass : subclasses)
+            mix(subclass);
+        return key;
+    }
+
     uint32 FindBestItem(Player* bot, uint32 itemClass, std::vector<uint32> const& subclasses, uint32 inventoryType)
     {
         uint8 const cls = bot->GetClass();
         uint8 const race = bot->GetRace();
         uint32 const classMask = (cls >= 1 && cls <= MAX_CLASSES) ? (1u << (cls - 1)) : 0u;
         uint32 const level = bot->GetLevel();
+
+        auto& cache = ItemLookupCache();
+        uint64 const cacheKey = MakeItemCacheKey(cls, race, level, itemClass, inventoryType, subclasses);
+        if (auto cached = cache.find(cacheKey); cached != cache.end())
+            return cached->second;
 
         auto wantsSubclass = [&subclasses](uint32 subclass)
         {
@@ -148,6 +188,7 @@ namespace
             bestItemLevel = itemLevel;
         }
 
+        cache[cacheKey] = bestEntry;
         return bestEntry;
     }
 
@@ -273,6 +314,7 @@ namespace
 
         uint32 const level = bot->GetLevel();
         uint32 learned = 0;
+        uint32 skipped = 0;
         sSpellMgr->ForEachSpellInfo([&](SpellInfo const* info)
         {
             if (info->SpellFamilyName != family)
@@ -287,12 +329,39 @@ namespace
                 return;
             if (bot->HasSpell(info->Id))
                 return;
+
+            // A spell family is not a class: item, quest and NPC spells share
+            // the same families. A fair number of them are pure client-side
+            // triggers with no server-side effect, or craft/learn-spell rows
+            // that point at data this build does not have. Handing those to
+            // Player::LearnSpell made the core reject them one by one and log
+            //   Player::AddSpell: Spell (ID: 51266) is invalid
+            // for every bot that logged in. Ask the core's own validator first
+            // - it is the very predicate Player::AddSpell applies.
+            if (!SpellMgr::IsSpellValid(info, bot, false))
+            {
+                ++skipped;
+                return;
+            }
+
+            // Nothing the server would ever do with it: no effect at all.
+            bool hasRealEffect = false;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.Effect != SPELL_EFFECT_NONE)
+                    hasRealEffect = true;
+            if (!hasRealEffect)
+            {
+                ++skipped;
+                return;
+            }
+
             bot->LearnSpell(info->Id, false, 0, true);
             ++learned;
         });
 
-        if (learned)
-            TC_LOG_DEBUG("playerbot", "{} learned {} class spell(s) for level {}", bot->GetName(), learned, level);
+        if (learned || skipped)
+            TC_LOG_DEBUG("playerbot", "{} learned {} class spell(s) for level {} ({} unusable spell(s) skipped)",
+                bot->GetName(), learned, level, skipped);
     }
 
     void RepairGear(Player* bot)
@@ -457,15 +526,51 @@ namespace BotFactory
             return;
 
         bool const isRandomBot = IsBotAccount(bot->GetSession()->GetAccountId());
+        BotSavedState const state = BotState::Load(bot->GetGUID());
 
-        // Random bots are leveled up to the configured band on first login.
-        if (isRandomBot && bot->GetLevel() < sBotConfig->RandomBotMinLevel)
+        // --- level -----------------------------------------------------------
+        // The old rule ("raise a bot only while it sits below the minimum")
+        // never fired with the shipped defaults, so the whole pool stayed
+        // level 1: no class abilities worth the name, and every human bot
+        // still standing in Northshire. The band in the config is what the
+        // operator asked for, so a random bot that has never been prepared -
+        // or that ended up outside the band - is drawn from it. A bot that was
+        // already prepared keeps the level it ground its way to.
+        bool leveled = false;
+        if (isRandomBot)
         {
-            uint32 target = urand(sBotConfig->RandomBotMinLevel, sBotConfig->RandomBotMaxLevel);
-            bot->GiveLevel(uint8(target));
-            bot->UpdateSkillsForLevel();
-            TC_LOG_INFO("playerbot", "{} leveled to {} for bot duty", bot->GetName(), target);
+            uint32 const minLevel = sBotConfig->RandomBotMinLevel;
+            uint32 const maxLevel = sBotConfig->RandomBotMaxLevel;
+            uint32 const current = bot->GetLevel();
+            bool const outOfBand = current < minLevel || current > maxLevel;
+
+            if (state.preparedLevel == 0 || outOfBand)
+            {
+                uint32 const target = minLevel >= maxLevel ? minLevel : urand(minLevel, maxLevel);
+                if (current != target)
+                {
+                    bot->GiveLevel(uint8(target));
+                    leveled = true;
+                }
+                bot->UpdateSkillsForLevel();
+                TC_LOG_INFO("playerbot", "{} prepared at level {} for bot duty (band {}-{})",
+                    bot->GetName(), uint32(bot->GetLevel()), minLevel, maxLevel);
+            }
         }
+
+        // --- spells / gear ----------------------------------------------------
+        // Re-granting the class kit and re-dressing the bot means scanning the
+        // whole item template store again and writing a row per spell. Doing
+        // that for every bot on every login is the other half of the startup
+        // freeze, and it also threw away what the character had earned. Only
+        // prepare when something actually changed.
+        bool const needsPrep = state.preparedLevel == 0
+            || leveled
+            || state.preparedLevel != bot->GetLevel()
+            || !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+
+        if (!needsPrep)
+            return;
 
         // class spells (trainable ranks up to the current level)
         LearnClassSpells(bot);
@@ -484,6 +589,7 @@ namespace BotFactory
         bot->SetFullHealth();
         bot->SetPower(bot->GetPowerType(), bot->GetMaxPower(bot->GetPowerType()));
 
+        BotState::SetPreparedLevel(bot->GetGUID(), bot->GetLevel());
         bot->SaveToDB();
     }
 
