@@ -210,6 +210,8 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
         CommandDps();
     else if (startsWith("grind"))
         CommandGrind(true);
+    else if (startsWith("summon"))
+        CommandSummon();
     else if (startsWith("status"))
         CommandStatus(sender);
     else if (startsWith("release"))
@@ -218,7 +220,7 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
             _deadTimer = sBotConfig->ReviveDelayMs;  // fast-path the self-res
     }
     else if (startsWith("help"))
-        WhisperMaster("I understand: follow, stay, come, attack my target, assist, stop attack, loot, heal, buff, rez, cure, eat, drink, upgrade, repair, tank, dps, grind, stop grind, status, release");
+        WhisperMaster("I understand: follow, stay, come, summon, attack my target, assist, stop attack, loot, heal, buff, rez, cure, eat, drink, upgrade, repair, tank, dps, grind, stop grind, status, release");
     else
         WhisperMaster("I don't know that command - whisper 'help' for the list");
 }
@@ -387,6 +389,19 @@ void BotAI::CommandGrind(bool on)
     _grindMode = on;
     WhisperMaster(on ? "grinding mobs nearby" : "grind off");
     _lastOrder = on ? "grind" : "stop grind";
+}
+
+void BotAI::CommandSummon()
+{
+    _masterTeleportCooldown = 0;
+    if (Player* master = GetMaster())
+    {
+        _movement->Stop();
+        _bot->TeleportTo(master->GetMapId(), master->GetPositionX() + frand(-1.5f, 1.5f),
+            master->GetPositionY() + frand(-1.5f, 1.5f), master->GetPositionZ(), master->GetOrientation());
+        WhisperMaster("on my way to you");
+    }
+    _lastOrder = "summon";
 }
 
 void BotAI::CommandStatus(Player* to)
@@ -727,6 +742,26 @@ void BotAI::UpdateNonCombat(uint32 diff)
     // 2. follow the master
     if (Unit* master = GetMaster())
     {
+        if (_masterTeleportCooldown > diff)
+            _masterTeleportCooldown -= diff;
+        else
+            _masterTeleportCooldown = 0;
+
+        // the master took a portal / flight / long road: catch up instead of
+        // standing behind forever. Paced so a wandering master cannot yo-yo
+        // the bot through instances.
+        if (!_bot->IsInMap(master) || _bot->GetDistance(master) > 250.0f)
+        {
+            if (_masterTeleportCooldown == 0 && !_movement->HasLiveGoal())
+            {
+                _masterTeleportCooldown = 30000;
+                _movement->Stop();
+                _bot->TeleportTo(master->GetMapId(), master->GetPositionX() + frand(-1.5f, 1.5f),
+                    master->GetPositionY() + frand(-1.5f, 1.5f), master->GetPositionZ(), master->GetOrientation());
+                return;
+            }
+        }
+
         if (CanSee(master))
         {
             float dist = _bot->GetExactDist2d(master);

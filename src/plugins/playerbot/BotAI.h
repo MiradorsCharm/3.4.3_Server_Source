@@ -87,6 +87,7 @@ public:
     void CommandTank();
     void CommandDps();
     void CommandGrind(bool on);
+    void CommandSummon();
 
     // --- victim management (used by combat + retaliate) ----------------------
     void Attack(Unit* target, std::string reason);
@@ -170,6 +171,7 @@ private:
     uint32 _consumeCooldown = 0;
     uint32 _grindScanCooldown = 0;
     uint32 _forceConsumeTimer = 0;
+    uint32 _masterTeleportCooldown = 0;    // catch-up teleport pacing
 
     // death / revive
     uint32 _deadTimer = 0;

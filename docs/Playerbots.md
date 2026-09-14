@@ -169,6 +169,7 @@ Whisper the bot (or use party/raid chat if you are its master):
 | `follow` | follow the master |
 | `stay` | hold position |
 | `come` | walk to the sender |
+| `summon` | teleport to the master now |
 | `attack my target` / `attack` | attack the sender's selection |
 | `assist` | attack the sender's victim |
 | `stop attack` | disengage |
@@ -203,6 +204,8 @@ account; GMs can always command.
   after `ReviveDelayMs`.
 * **Loot**: corpses of their own kills are queued and looted
   automatically.
+* **Catch up**: a master who portals away is followed by a paced
+  teleport (also available as the `summon` command).
 
 ## 7. Combat behaviour
 
