@@ -318,5 +318,16 @@ class AdvancedServicesTest(unittest.TestCase):
         self.assertIn("!mail->COD", interact)
 
 
+    def test_quests_are_taken_and_turned_in(self):
+        interact = (PLUGIN / "BotInteract.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("TakeMastersQuests", interact)
+        self.assertIn("TurnInCompletedQuests", interact)
+        self.assertIn("HandleQuestgiverHelloOpcode", interact)
+        self.assertIn("HandleQuestgiverChooseRewardOpcode", interact)
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("TurnInCompletedQuests(_bot)", ai)    # automatic sweep
+        self.assertIn("CommandQuests", ai)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

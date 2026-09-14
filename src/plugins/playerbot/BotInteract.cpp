@@ -23,6 +23,9 @@
 #include "Server/Packets/MailPackets.h"
 #include "Mail.h"
 #include "GameObject.h"
+#include "QuestDef.h"
+#include "ObjectMgr.h"
+#include "Server/Packets/QuestPackets.h"
 #include "Opcodes.h"
 #include "AuctionHouse/AuctionHouseMgr.h"
 #include "Map.h"
@@ -174,6 +177,14 @@ namespace
             return nullptr;
         Creature* creature = found->ToCreature();
         return creature && creature->HasNpcFlag(npcFlag) ? creature : nullptr;
+    }
+
+    Creature* FindQuestGiver(Player* bot)
+    {
+        Creature* giver = FindNearNpc(bot, UNIT_NPC_FLAG_QUESTGIVER, sBotConfig->SightDistance);
+        if (!giver)
+            return nullptr;
+        return bot->GetNPCIfCanInteractWith(giver->GetGUID(), UNIT_NPC_FLAG_QUESTGIVER, UNIT_NPC_FLAG_2_NONE);
     }
 }
 
@@ -378,5 +389,87 @@ namespace BotInteract
             return false;
         }
         return true;
+    }
+
+    uint32 TakeMastersQuests(Player* bot, Player* master)
+    {
+        if (!bot || !master || bot->GetTeam() != master->GetTeam())
+            return 0;
+
+        uint32 taken = 0;
+        for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        {
+            uint32 const questId = master->GetQuestSlotQuestId(slot);
+            if (!questId)
+                continue;
+            Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+            if (!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_NONE)
+                continue;
+            if (quest->GetQuestMinLevel() > int32(bot->GetLevel()))
+                continue;
+            if (!bot->CanAddQuest(quest, false))
+                continue;
+
+            bot->AddQuest(quest, master);
+            ++taken;
+        }
+
+        if (taken)
+            TC_LOG_INFO("playerbot", "{} took {} quest(s) from {}", bot->GetName(), taken, master->GetName());
+        return taken;
+    }
+
+    uint32 TurnInCompletedQuests(Player* bot)
+    {
+        if (!bot || !bot->IsAlive() || !bot->IsInWorld())
+            return 0;
+
+        bool anyReady = false;
+        for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE && !anyReady; ++slot)
+        {
+            uint32 const questId = bot->GetQuestSlotQuestId(slot);
+            if (questId && bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && bot->CanCompleteQuest(questId))
+                anyReady = true;
+        }
+        if (!anyReady)
+            return 0;
+
+        Creature* giver = FindQuestGiver(bot);
+        if (!giver)
+            return 0;
+
+        uint32 turned = 0;
+        for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        {
+            uint32 const questId = bot->GetQuestSlotQuestId(slot);
+            if (!questId)
+                continue;
+            if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE || !bot->CanCompleteQuest(questId))
+                continue;
+
+            Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+            if (!quest)
+                continue;
+
+            // same order a real client sends: gossip, then the reward choice
+            WorldPackets::Quest::QuestGiverHello hello{WorldPacket(CMSG_QUEST_GIVER_HELLO)};
+            hello.QuestGiverGUID = giver->GetGUID();
+            bot->GetSession()->HandleQuestgiverHelloOpcode(hello);
+
+            WorldPackets::Quest::QuestGiverChooseReward reward{WorldPacket(CMSG_QUEST_GIVER_CHOOSE_REWARD)};
+            reward.QuestGiverGUID = giver->GetGUID();
+            reward.QuestID = int32(questId);
+            if (quest->GetRewChoiceItemsCount() > 0 && quest->RewardChoiceItemId[0])
+            {
+                reward.Choice.Item.ItemID = quest->RewardChoiceItemId[0];
+                reward.Choice.LootItemType = LootItemType::Item;
+            }
+            bot->GetSession()->HandleQuestgiverChooseRewardOpcode(reward);
+            ++turned;
+        }
+
+        if (turned)
+            TC_LOG_INFO("playerbot", "{} turned in {} quest(s)", bot->GetName(), turned);
+        return turned;
     }
 }

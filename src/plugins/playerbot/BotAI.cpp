@@ -225,6 +225,8 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
         CommandLeave();
     else if (startsWith("sell"))
         CommandSell();
+    else if (startsWith("quests") || startsWith("quest"))
+        CommandQuests();
     else if (startsWith("talents"))
     {
         uint32 spent = BotTalents::SpendPoints(_bot);
@@ -238,7 +240,7 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
             _deadTimer = sBotConfig->ReviveDelayMs;  // fast-path the self-res
     }
     else if (startsWith("help"))
-        WhisperMaster("I understand: follow, stay, come, summon, attack my target, assist, stop attack, loot, heal, buff, rez, cure, eat, drink, upgrade, repair, tank, dps, grind, stop grind, queue, leave, guild, sell, talents, status, release");
+        WhisperMaster("I understand: follow, stay, come, summon, attack my target, assist, stop attack, loot, heal, buff, rez, cure, eat, drink, upgrade, repair, tank, dps, grind, stop grind, queue, leave, guild, sell, quests, talents, status, release");
     else
         WhisperMaster("I don't know that command - whisper 'help' for the list");
 }
@@ -466,6 +468,17 @@ void BotAI::CommandSell()
     BotInteract::SellJunk(_bot, reply);
     WhisperMaster(reply);
     _lastOrder = "sell";
+}
+
+void BotAI::CommandQuests()
+{
+    Player* master = GetMaster();
+    uint32 taken = BotInteract::TakeMastersQuests(_bot, master);
+    if (taken)
+        WhisperMaster("took " + std::to_string(taken) + " of your quests - I will hand them in when done");
+    else
+        WhisperMaster("nothing of your quest log I can take");
+    _lastOrder = "quests";
 }
 
 void BotAI::CommandStatus(Player* to)
@@ -753,6 +766,16 @@ void BotAI::UpdatePartyCare(uint32 diff)
         _talentTimer = 0;
         if (_bot->GetLevel() >= 10 && _bot->m_activePlayerData->CharacterPoints)
             BotTalents::SpendPoints(_bot);
+    }
+
+    // hand finished quests in at nearby quest givers (kill/loot objectives
+    // complete themselves while grinding alongside the master)
+    _questTimer += 2000;
+    if (_questTimer >= 6000)
+    {
+        _questTimer = 0;
+        if (!_combat->HasVictim())
+            BotInteract::TurnInCompletedQuests(_bot);
     }
 }
 

@@ -190,6 +190,7 @@ Whisper the bot (or use party/raid chat if you are its master):
 | `guild leave` | leave the guild |
 | `sell` | vendor junk / post equipment at the auction house |
 | `talents` | spend free talent points now |
+| `quests` | take the master's shareable quests |
 | `status` | one-line self report |
 | `release` | speed up self-resurrection |
 | `help` | the list |
@@ -215,6 +216,10 @@ account; GMs can always command.
 * **Talents**: every earned talent point is spent automatically through the
   core's validated `Player::LearnTalent` (tier/tab order) - on login, on
   level-up (checked every minute), and on the `talents` command.
+* **Quests**: `quests` takes everything from the master's quest log the bot
+  qualifies for; finished quests are handed in automatically at nearby quest
+  givers (kill and loot objectives complete themselves while the bot fights
+  and loots beside you).
 * **Social**: duels from the master are accepted and fought; trade windows
   from the master are opened and confirmed; `guild` joins the master's
   guild, `guild leave` leaves it.
