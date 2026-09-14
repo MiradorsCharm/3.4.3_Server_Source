@@ -23,6 +23,8 @@ namespace ai
         None,         // nothing actionable (or the bot is simply fighting)
         ClearCast,    // cancel what blocks movement/swings, then let the AI retry
         RetryMove,    // re-issue the approach toward the victim
+        RetryAttack,  // in position but nothing is being fired: strike directly,
+                      // or close in when the bot has no ranged attack to fire
         DropTarget    // this victim is unreachable: disengage and say why
     };
 

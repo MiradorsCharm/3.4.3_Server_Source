@@ -47,7 +47,7 @@ bool AttackMyTargetAction::Execute(Event event)
     // reached the bot" otherwise.
     ostringstream out;
     out << "Attacking " << target->GetName();
-    if (ai->IsRanged(bot) && !IsInMeleeRange(target))
+    if (ai->GetBotAttackRange(target) > 0.0f && !IsInMeleeRange(target))
         out << " at range";
     ai->TellMaster(out);
     return true;
@@ -140,69 +140,119 @@ bool AttackAction::Attack(Unit* target)
         }
     }
 
-    // Starting the swing is not starting the fight. The core only lets a melee hit
-    // land inside Unit::IsWithinMeleeRange() (3D and combat-reach based), and until
-    // this patch nothing at all was obliged to close that gap: the "enemy out of
-    // melee" trigger pushed "reach melee" at a *lower* priority than the attack
-    // action, which returned true every tick, so a bot that was out of reach (or
-    // that the 2D distance value claimed was in reach) kept its attack state, kept
-    // claiming success, and never swung. That is the "they just stand there doing
-    // the attack animation" report. The order that engages therefore also walks,
-    // and a bot that provably cannot walk says so instead of posing forever.
     ai->ChangeEngine(BOT_STATE_COMBAT);
 
-    bool const ranged = ai->IsRanged(bot);
+    // --- Engage and fight, core-native ---------------------------------------
+    //
+    // The only attack this core executes by itself is the melee swing:
+    // Unit::Attack(victim, meleeAttack=true) arms UNIT_STATE_MELEE_ATTACKING
+    // and Unit::DoMeleeAttackIfReady() then swings every update on its own.
+    // Every ranged attack - a caster nuke, a wand shoot, a hunter auto-shot -
+    // is a SPELL that the AI must actively cast; nothing in the core will do
+    // it for the bot. That is why a ranged bot must never just "be engaged":
+    //
+    //  * the approach distance is what the bot can actually attack with,
+    //    computed from its own spellbook and equipped weapon
+    //    (PlayerbotAI::GetBotAttackRange - the core's own spell ranges, not a
+    //    per-class guess), so the bot walks into range instead of stopping
+    //    wherever a heuristic says;
+    //  * a bot with NO usable ranged attack (unlearned spells, unusable item
+    //    in the ranged slot) is a melee bot for this fight - it closes in and
+    //    swings, because standing at spell range waiting for a shot it cannot
+    //    fire is exactly the "ranged bot does nothing" bug;
+    //  * once in range the attack itself is issued immediately. For ranged
+    //    bots that is the best ready spell cast straight at the victim -
+    //    waiting for the trigger/queue machinery to get around to it was the
+    //    other half of the same bug. Melee bots need no such push: the swing
+    //    loop above takes over.
+    float const attackRange = ai->GetBotAttackRange(target);
+    bool const ranged = attackRange > 0.0f;
     bool const inMeleeRange = IsInMeleeRange(target);
 
-    if (!inMeleeRange && !ranged)
+    if (!inMeleeRange)
     {
-        if (!ApproachForMelee(target))
+        if (ranged && bot->GetExactDist(target) > attackRange + sPlayerbotAIConfig.contactDistance)
         {
-            if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
-                bot->AttackStop();
-
-            if (verbose)
+            // Stop a couple of yards inside the attack envelope so target
+            // movement does not instantly push the bot out of range again.
+            float const stop = std::max(attackRange - 2.0f, sPlayerbotAIConfig.meleeDistance);
+            if (!MoveTo(target, stop))
             {
-                ostringstream out;
-                out << "I cannot get to " << target->GetName();
-                ai->TellMaster(out);
+                if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                    bot->AttackStop();
+
+                if (verbose)
+                {
+                    ostringstream out;
+                    out << "I cannot get in range of " << target->GetName();
+                    ai->TellMaster(out);
+                }
+                return false;
             }
-            return false;
+        }
+        else if (!ranged)
+        {
+            // Starting the swing is not starting the fight. The core only lets
+            // a melee hit land inside Unit::IsWithinMeleeRange() (3D and
+            // combat-reach based), so the order that engages also walks: a bot
+            // that provably cannot walk says so instead of posing forever.
+            if (!ApproachForMelee(target))
+            {
+                if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                    bot->AttackStop();
+
+                if (verbose)
+                {
+                    ostringstream out;
+                    out << "I cannot get to " << target->GetName();
+                    ai->TellMaster(out);
+                }
+                return false;
+            }
         }
     }
 
-    // Engaging is not optional. Unit::Attack() is what creates the victim link
-    // ("I am fighting that thing") the rest of the fight is built on: the melee
-    // swing loop, the pet's own attack order, the threat/attacker bookkeeping
-    // and every trigger that reads GetVictim(). Ordering "attack" - or grinding
-    // - must never leave the bot with only an AI-side target name while the
-    // core still believes the bot is fighting nobody: that is exactly the
-    // "nothing happens" report (no swing, no auto-shot, the target does not
-    // even know it is in a fight).
+    // Engaging is not optional. Unit::Attack() is what creates the victim
+    // link ("I am fighting that thing") the rest of the fight is built on:
+    // the melee swing loop, the pet's own attack order, the threat/attacker
+    // bookkeeping and every trigger that reads GetVictim(). Ordering
+    // "attack" - or grinding - must never leave the bot with only an AI-side
+    // target name while the core still believes the bot is fighting nobody.
     //
-    // meleeAttack=false is the core's own "engage at range" mode: the victim is
-    // set exactly as for a melee attack, but UNIT_STATE_MELEE_ATTACKING stays
-    // clear, so Unit::DoMeleeAttackIfReady() never runs its range/arc test and
-    // a caster or hunter cannot end up reporting AttackSwingErr::NotInRange
-    // from 13 yards (the regression this branch exists for). When the mode has
-    // to change (bot closed in, or was pulled into melee), Unit::Attack(victim,
-    // meleeAttack) switches between melee and ranged without dropping the
-    // victim - unlike AttackStop(), which would end the fight.
+    // meleeAttack=false is the core's own "engage at range" mode: the victim
+    // is set exactly as for a melee attack, but UNIT_STATE_MELEE_ATTACKING
+    // stays clear, so Unit::DoMeleeAttackIfReady() never runs its range/arc
+    // test and a caster or hunter cannot end up reporting
+    // AttackSwingErr::NotInRange from 13 yards. A bot that ended up inside
+    // melee range engages in melee mode instead - swings are the one attack
+    // the core will drive for it.
     bool const wantMelee = !ranged || inMeleeRange;
     bool const meleeAttacking = bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING);
 
     if (bot->GetVictim() != target || meleeAttacking != wantMelee)
         bot->Attack(target, wantMelee);
 
+    // Strike right now if possible. For a ranged bot this IS the attack:
+    // FindBestAttackSpell only returns spells the core's own trial cast
+    // accepts for this target (cooldown ready, power affordable, in range,
+    // not immune), and CastSpell reports honestly when the cast still fails,
+    // so the engine falls through to alternatives instead of pretending.
+    if (ranged && !bot->IsNonMeleeSpellCast(false, true, true)
+            && bot->GetExactDist(target) <= attackRange + sPlayerbotAIConfig.contactDistance)
+    {
+        if (uint32 const spellId = ai->FindBestAttackSpell(target))
+            ai->CastSpell(spellId, target);
+    }
+
     return true;
 }
 
 bool AttackDuelOpponentAction::isUseful()
 {
-    return AI_VALUE(Unit*, "duel target");
+	return AI_VALUE(Unit*, "duel target");
 }
 
 bool AttackDuelOpponentAction::Execute(Event event)
 {
-    return Attack(AI_VALUE(Unit*, "duel target"));
+	return Attack(AI_VALUE(Unit*, "duel target"));
 }

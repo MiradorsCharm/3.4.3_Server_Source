@@ -14,6 +14,8 @@
 using namespace ai;
 using namespace std;
 
+char* strstri(const char* str1, const char* str2);
+
 uint32 PlayerbotFactory::tradeSkills[] =
 {
     SKILL_ALCHEMY,
@@ -504,75 +506,163 @@ void PlayerbotFactory::AddItemStats(uint32 mod, uint8 &sp, uint8 &ap, uint8 &tan
     }
 }
 
-bool PlayerbotFactory::CanEquipWeapon(ItemTemplate const* proto)
+// The weapon skill behind a weapon subclass. PlayerbotFactory::InitSkills /
+// SetRandomSkill only grant skills the core's SkillRaceClassInfo allows for
+// the bot's race/class, so HasSkill() on this mapping is the authoritative
+// "can this bot actually attack with this item" check - independent of any
+// requirement the item template itself carries (the client data still ships
+// Blizzard-internal QA items that carry none at all).
+static uint32 WeaponSkillForWeaponSubclass(uint32 weaponSubClass)
 {
-    switch (bot->GetClass())
+    switch (weaponSubClass)
     {
-    case CLASS_PRIEST:
-        if (proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_STAFF &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_WAND &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE)
-            return false;
-        break;
-    case CLASS_MAGE:
-    case CLASS_WARLOCK:
-        if (proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_STAFF &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_WAND &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_SWORD)
-            return false;
-        break;
-    case CLASS_WARRIOR:
-        if (proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE2 &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_SWORD2 &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_SWORD &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_GUN &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_CROSSBOW &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_BOW &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_THROWN)
-            return false;
-        break;
-    case CLASS_PALADIN:
-        if (proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE2 &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_SWORD2 &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_SWORD)
-            return false;
-        break;
-    case CLASS_SHAMAN:
-        if (proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE2 &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_STAFF)
-            return false;
-        break;
-    case CLASS_DRUID:
-        if (proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE2 &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_DAGGER &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_STAFF)
-            return false;
-        break;
-    case CLASS_HUNTER:
-        if (proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_AXE2 &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_SWORD2 &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_GUN &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_CROSSBOW &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_BOW)
-            return false;
-        break;
-    case CLASS_ROGUE:
-        if (proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_DAGGER &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_SWORD &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_MACE &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_GUN &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_CROSSBOW &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_BOW &&
-                proto->GetSubClass() != ITEM_SUBCLASS_WEAPON_THROWN)
-            return false;
-        break;
+        case ITEM_SUBCLASS_WEAPON_AXE:         return SKILL_AXES;
+        case ITEM_SUBCLASS_WEAPON_AXE2:        return SKILL_TWO_HANDED_AXES;
+        case ITEM_SUBCLASS_WEAPON_BOW:         return SKILL_BOWS;
+        case ITEM_SUBCLASS_WEAPON_GUN:         return SKILL_GUNS;
+        case ITEM_SUBCLASS_WEAPON_MACE:        return SKILL_MACES;
+        case ITEM_SUBCLASS_WEAPON_MACE2:       return SKILL_TWO_HANDED_MACES;
+        case ITEM_SUBCLASS_WEAPON_POLEARM:     return SKILL_POLEARMS;
+        case ITEM_SUBCLASS_WEAPON_STAFF:       return SKILL_STAVES;
+        case ITEM_SUBCLASS_WEAPON_SWORD:       return SKILL_SWORDS;
+        case ITEM_SUBCLASS_WEAPON_SWORD2:      return SKILL_TWO_HANDED_SWORDS;
+        case ITEM_SUBCLASS_WEAPON_THROWN:      return SKILL_THROWN;
+        case ITEM_SUBCLASS_WEAPON_CROSSBOW:    return SKILL_CROSSBOWS;
+        case ITEM_SUBCLASS_WEAPON_WAND:        return SKILL_WANDS;
+        case ITEM_SUBCLASS_WEAPON_DAGGER:      return SKILL_DAGGERS;
+        case ITEM_SUBCLASS_WEAPON_FIST_WEAPON: return SKILL_FIST_WEAPONS;
+        default:                               return 0;
     }
+}
+
+bool PlayerbotFactory::CanEquipWeapon(ItemTemplate const* proto, uint8 slot)
+{
+    // Three independent gates, all enforced by the core on a real player, so a
+    // bot can never wear something a player could not:
+    //  1. class + slot: which weapon subclasses this class may use, and in
+    //     which slot (a bow is a ranged-slot weapon for hunters, not a
+    //     mainhand for mages - the old check was class-only and slot-blind);
+    //  2. proficiency: the bot must actually hold the weapon skill;
+    //  3. inventory type vs. slot sanity.
+    uint32 const sub = proto->GetSubClass();
+    bool const rangedSlot = (slot == EQUIPMENT_SLOT_RANGED);
+    bool const handSlot = (slot == EQUIPMENT_SLOT_MAINHAND || slot == EQUIPMENT_SLOT_OFFHAND);
+
+    bool usable = false;
+    if (rangedSlot)
+    {
+        switch (bot->GetClass())
+        {
+        case CLASS_PRIEST:
+        case CLASS_MAGE:
+        case CLASS_WARLOCK:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_WAND);
+            break;
+        case CLASS_HUNTER:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_BOW || sub == ITEM_SUBCLASS_WEAPON_GUN ||
+                    sub == ITEM_SUBCLASS_WEAPON_CROSSBOW);
+            break;
+        case CLASS_WARRIOR:
+        case CLASS_ROGUE:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_BOW || sub == ITEM_SUBCLASS_WEAPON_GUN ||
+                    sub == ITEM_SUBCLASS_WEAPON_CROSSBOW || sub == ITEM_SUBCLASS_WEAPON_THROWN);
+            break;
+        default:
+            // Paladin/shaman/druid/death knight: that slot is for class
+            // relics (armor-class items handled by the armor path), never a
+            // weapon.
+            usable = false;
+            break;
+        }
+    }
+    else if (handSlot)
+    {
+        switch (bot->GetClass())
+        {
+        case CLASS_PRIEST:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_STAFF || sub == ITEM_SUBCLASS_WEAPON_MACE);
+            break;
+        case CLASS_MAGE:
+        case CLASS_WARLOCK:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_STAFF || sub == ITEM_SUBCLASS_WEAPON_SWORD);
+            break;
+        case CLASS_WARRIOR:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_MACE2 || sub == ITEM_SUBCLASS_WEAPON_SWORD2 ||
+                    sub == ITEM_SUBCLASS_WEAPON_MACE || sub == ITEM_SUBCLASS_WEAPON_SWORD);
+            break;
+        case CLASS_PALADIN:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_MACE2 || sub == ITEM_SUBCLASS_WEAPON_SWORD2 ||
+                    sub == ITEM_SUBCLASS_WEAPON_MACE || sub == ITEM_SUBCLASS_WEAPON_SWORD);
+            break;
+        case CLASS_SHAMAN:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_MACE || sub == ITEM_SUBCLASS_WEAPON_MACE2 ||
+                    sub == ITEM_SUBCLASS_WEAPON_STAFF);
+            break;
+        case CLASS_DRUID:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_MACE || sub == ITEM_SUBCLASS_WEAPON_MACE2 ||
+                    sub == ITEM_SUBCLASS_WEAPON_DAGGER || sub == ITEM_SUBCLASS_WEAPON_STAFF);
+            break;
+        case CLASS_HUNTER:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_AXE2 || sub == ITEM_SUBCLASS_WEAPON_SWORD2);
+            break;
+        case CLASS_ROGUE:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_DAGGER || sub == ITEM_SUBCLASS_WEAPON_SWORD ||
+                    sub == ITEM_SUBCLASS_WEAPON_MACE);
+            break;
+        case CLASS_DEATH_KNIGHT:
+            usable = (sub == ITEM_SUBCLASS_WEAPON_AXE || sub == ITEM_SUBCLASS_WEAPON_AXE2 ||
+                    sub == ITEM_SUBCLASS_WEAPON_MACE || sub == ITEM_SUBCLASS_WEAPON_MACE2 ||
+                    sub == ITEM_SUBCLASS_WEAPON_SWORD || sub == ITEM_SUBCLASS_WEAPON_SWORD2 ||
+                    sub == ITEM_SUBCLASS_WEAPON_POLEARM);
+            break;
+        default:
+            usable = false;
+            break;
+        }
+    }
+    else
+    {
+        // Spare for the bags: anything this class can use in some slot.
+        return CanEquipWeapon(proto, EQUIPMENT_SLOT_MAINHAND) || CanEquipWeapon(proto, EQUIPMENT_SLOT_RANGED);
+    }
+    if (!usable)
+        return false;
+
+    // Proficiency: InitSkills/SetRandomSkill only granted the weapon skills
+    // the core allows for this race/class. This is what keeps QA/test entries
+    // of the client data off bots even when their template carries no
+    // requirement of its own (a "TESTING" wand has no skill requirement - a
+    // mage's SKILL_WANDS is the real gate).
+    uint32 const skill = WeaponSkillForWeaponSubclass(sub);
+    if (skill && !bot->HasSkill(skill))
+        return false;
+
+    // Inventory type vs. slot: a ranged-type weapon never goes into a hand
+    // slot and vice versa, whatever the subclass fields claim.
+    uint32 const invType = proto->GetInventoryType();
+    if (rangedSlot)
+        return invType == INVTYPE_RANGED || invType == INVTYPE_RANGEDRIGHT || invType == INVTYPE_THROWN;
+    if (handSlot)
+        return invType != INVTYPE_RANGED && invType != INVTYPE_RANGEDRIGHT && invType != INVTYPE_THROWN;
 
     return true;
+}
+
+// The item templates this core loads from the client data still include
+// Blizzard-internal QA entries - names like "TESTING ...". They pass every
+// numeric gate (level, quality, even class/subclass) and used to be equipped
+// on bots; the ones flagged for no class in particular are how a mage ended
+// up with a bow in the ranged slot. RandomItemMgr applies the same name
+// filter for guild-task items; equipment generation must too.
+bool PlayerbotFactory::IsJunkTestItem(ItemTemplate const* proto)
+{
+    char const* name = proto->GetDefaultLocaleName();
+    if (!name || !name[0])
+        return false;
+
+    return strstri(name, "test") != nullptr
+        || strstri(name, "qa") != nullptr
+        || strstri(name, "deprecated") != nullptr;
 }
 
 bool PlayerbotFactory::CanEquipItem(ItemTemplate const* proto, uint32 desiredQuality)
@@ -655,6 +745,9 @@ void PlayerbotFactory::InitEquipment(bool incremental)
                     proto->GetClass() != ITEM_CLASS_PROJECTILE)
                     continue;
 
+                if (IsJunkTestItem(proto))
+                    continue;
+
                 if (!CanEquipItem(proto, desiredQuality))
                     continue;
 
@@ -669,7 +762,7 @@ void PlayerbotFactory::InitEquipment(bool incremental)
                     slot == EQUIPMENT_SLOT_HANDS) && !CanEquipArmor(proto))
                         continue;
 
-                if (proto->GetClass() == ITEM_CLASS_WEAPON && !CanEquipWeapon(proto))
+                if (proto->GetClass() == ITEM_CLASS_WEAPON && !CanEquipWeapon(proto, slot))
                     continue;
 
                 if (slot == EQUIPMENT_SLOT_OFFHAND && bot->GetClass() == CLASS_ROGUE && proto->GetClass() != ITEM_CLASS_WEAPON)
@@ -761,9 +854,13 @@ void PlayerbotFactory::InitSecondEquipmentSet()
             if (!CanEquipItem(proto, desiredQuality))
                 continue;
 
+            if (IsJunkTestItem(proto))
+                continue;
+
             if (proto->GetClass() == ITEM_CLASS_WEAPON)
             {
-                if (!CanEquipWeapon(proto))
+                // Spare set for the bags: anything usable in any slot.
+                if (!CanEquipWeapon(proto, EQUIPMENT_SLOT_END))
                     continue;
 
                 Item* existingItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
@@ -842,6 +939,9 @@ void PlayerbotFactory::InitBags()
         uint32 itemId = i->first;
         ItemTemplate const* proto = &i->second;
         if (!proto || proto->GetClass() != ITEM_CLASS_CONTAINER)
+            continue;
+
+        if (IsJunkTestItem(proto))
             continue;
 
         if (!CanEquipItem(proto, ITEM_QUALITY_NORMAL))
@@ -1702,10 +1802,14 @@ void PlayerbotFactory::InitInventoryEquip()
                 proto->GetBonding() == BIND_ON_USE))
             continue;
 
+        if (IsJunkTestItem(proto))
+            continue;
+
         if (proto->GetClass() == ITEM_CLASS_ARMOR && !CanEquipArmor(proto))
             continue;
 
-        if (proto->GetClass() == ITEM_CLASS_WEAPON && !CanEquipWeapon(proto))
+        // Spare equipment for the bags: anything usable in any slot.
+        if (proto->GetClass() == ITEM_CLASS_WEAPON && !CanEquipWeapon(proto, EQUIPMENT_SLOT_END))
             continue;
 
         if (!CanEquipItem(proto, desiredQuality))

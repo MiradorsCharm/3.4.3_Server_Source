@@ -24,7 +24,7 @@ namespace ai
     public:
         EnemyInsideRangedDeadZoneTrigger(PlayerbotAI* ai) : Trigger(ai, "enemy inside ranged dead zone") {}
         virtual bool IsActive()
-        {
+		{
             if (!ai->IsRanged(bot))
                 return false;
 
@@ -32,10 +32,16 @@ namespace ai
             if (!target)
                 return false;
 
+            // A bot with no usable ranged attack must never back off: its only
+            // way to fight is the melee swing the core drives for it. Only a
+            // bot that actually has something to shoot/cast belongs at range.
+            if (ai->GetBotAttackRange(target) <= 0.0f)
+                return false;
+
             // Centre-to-centre, like every core range test. 11 yd is past the
             // 8-yd minimum range of Shoot/wand with margin; the matching action
-            // walks back out to spellDistance/2, so trigger and action cannot
-            // fight each other over the last yard.
+            // walks back out toward the bot's own attack range, so trigger and
+            // action cannot fight each other over the last yard.
             return bot->GetExactDist(target) < 11.0f;
         }
     };
@@ -74,25 +80,32 @@ namespace ai
         EnemyOutOfMeleeTrigger(PlayerbotAI* ai) : OutOfRangeTrigger(ai, "enemy out of melee range", sPlayerbotAIConfig.meleeDistance) {}
     };
 
-    class EnemyOutOfSpellRangeTrigger : public OutOfRangeTrigger
+    // "Out of spell range" means "further than this bot can actually attack":
+    // the longest learned damaging spell plus a usable ranged weapon, computed
+    // live from the bot's own spellbook and equipment
+    // (PlayerbotAI::GetBotAttackRange). The old version baked a per-class
+    // constant into the trigger at construction time - a bot that gained or
+    // lost a ranged attack afterwards kept the stale number, and a bot with
+    // no usable ranged attack at all was still told to hold at "spell range"
+    // and stand there. Both now follow the bot's real reach every tick.
+    class EnemyOutOfSpellRangeTrigger : public Trigger
 	{
-    public:
-        EnemyOutOfSpellRangeTrigger(PlayerbotAI* ai) : OutOfRangeTrigger(ai, "enemy out of spell range", EffectiveSpellDistance(ai)) {}
-    private:
-        static float EffectiveSpellDistance(PlayerbotAI* ai)
-        {
-            Player* bot = ai->GetBot();
-            if (!bot)
-                return sPlayerbotAIConfig.spellDistance;
-            // Mirror ReachSpellAction: wand/bow/gun users and pure casters can
-            // cast out to ~30 yd; if the trigger uses the old 25 yd threshold
-            // they never walk in for a 28-30 yd Shadow Bolt and the core keeps
-            // rejecting the cast with SPELL_FAILED_OUT_OF_RANGE.
-            if (bot->GetWeaponForAttack(RANGED_ATTACK, true) != nullptr
-                || bot->GetClass() == CLASS_WARLOCK || bot->GetClass() == CLASS_MAGE
-                || bot->GetClass() == CLASS_PRIEST || bot->GetClass() == CLASS_HUNTER)
-                return 28.0f;
-            return sPlayerbotAIConfig.spellDistance;
+	public:
+        EnemyOutOfSpellRangeTrigger(PlayerbotAI* ai) : Trigger(ai, "enemy out of spell range") {}
+        virtual bool IsActive()
+		{
+            Unit* target = AI_VALUE(Unit*, "current target");
+            if (!target)
+                return false;
+
+            float const range = ai->GetBotAttackRange(target);
+            if (range <= 0.0f)
+                return false;   // nothing to reach with at range: melee path owns this fight
+
+            // Centre-to-centre 3D distance, the metric Spell::CheckRange()
+            // uses - the 2D "distance" value under-reads by the combat
+            // reaches and would stop the approach short of real range.
+            return bot->GetExactDist(target) > range + sPlayerbotAIConfig.contactDistance;
         }
     };
 

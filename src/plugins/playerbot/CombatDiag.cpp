@@ -67,9 +67,24 @@ CombatStall ai::EvaluateCombatStall(CombatSnapshot const& snap)
     // 5-yd dead zone (auto-shot cannot fire, melee interrupts casts) - that is
     // not a happy state, it is its own stall (handled below as the dead-zone
     // branch). Exclude inMeleeRange from the happy gate.
-    bool const rangedCoreIsHappy = snap.hasRangedAttack && snap.inSpellRange
+    //
+    // Two gates the old classifier did not have - the "ranged bot stands there
+    // doing absolutely nothing" report:
+    //  * rangedAttackUsable: a bot can look ranged (class, or some item in the
+    //    ranged slot) while having no attack it can actually fire - an empty or
+    //    unlearned spellbook, or a QA/test item in the ranged slot that this
+    //    class cannot use. Such a bot is never "happily fighting at range"; it
+    //    has to close in and swing, and the classifier must say so.
+    //  * activity: being in spell range with LOS is not fighting. Only a cast
+    //    in progress, a running auto-repeat (wand shoot / auto shot) or an
+    //    active melee state counts as doing something; otherwise this is
+    //    exactly the silent "no abilities at all" stall and must be reported
+    //    (the 4-second no-progress window above keeps it out of normal casting
+    //    cadence).
+    bool const rangedCoreIsHappy = snap.hasRangedAttack && snap.rangedAttackUsable && snap.inSpellRange
         && !snap.inMeleeRange
         && snap.hasLOS && snap.inArc
+        && (snap.casting || snap.autoRepeatActive || snap.attackState)
         && !snap.pacified && !snap.disarmed && !snap.teleported;
     if (meleeCoreIsHappy || rangedCoreIsHappy)
         return stall;
@@ -194,12 +209,43 @@ CombatStall ai::EvaluateCombatStall(CombatSnapshot const& snap)
         return stall;
     }
 
+    if (snap.hasRangedAttack && !snap.rangedAttackUsable)
+    {
+        // "Ranged" by class or by whatever sits in the ranged slot, but with no
+        // attack it can actually fire from range (no learned attack spell, no
+        // ranged weapon this bot is proficient with - a QA/test item in the
+        // ranged slot shows up exactly like this). Standing at spell range and
+        // waiting for a shot that can never come is the stall; the recovery is
+        // to close in and fight in melee, which this bot can always do.
+        stall.report = true;
+        stall.action = CombatStallAction::RetryAttack;
+        stall.reason = "classified as ranged but has no usable ranged attack (the ranged slot holds an item "
+            "this bot cannot attack with, or no attack spell is learned): closing in to fight in melee "
+            "instead of standing at range doing nothing";
+        return stall;
+    }
+
     if (!snap.attackState && !snap.hasRangedAttack)
     {
         stall.report = true;
         stall.action = CombatStallAction::RetryMove;
         stall.reason = "in swing range with no melee-attack state: AttackStart() never reached the core, "
             "so DoMeleeAttackIfReady() returns at its first line";
+        return stall;
+    }
+
+    if (snap.hasRangedAttack && !snap.casting && !snap.autoRepeatActive && !snap.attackState)
+    {
+        // In spell range, line of sight, facing - and still nothing is being
+        // fired. On this core every ranged attack is a spell somebody has to
+        // cast (the core only auto-drives melee swings and a running
+        // auto-repeat loop), so "no cast and no auto-repeat" means the attack
+        // loop is not being driven at all. The recovery strikes directly, and
+        // falls back to a melee approach when there is nothing to cast.
+        stall.report = true;
+        stall.action = CombatStallAction::RetryAttack;
+        stall.reason = "in spell range with line of sight but nothing is being fired: no cast in progress, "
+            "no wand/auto-shot loop running and no melee state - the ranged attack is not being driven";
         return stall;
     }
 
@@ -263,6 +309,8 @@ std::string ai::FormatCombatSnapshot(CombatSnapshot const& snap)
         << " disarmed=" << (snap.disarmed ? 1 : 0)
         << " weapon=" << (snap.hasMeleeWeapon ? 1 : 0)
         << " ranged=" << (snap.hasRangedAttack ? 1 : 0)
+        << " rangedUsable=" << (snap.rangedAttackUsable ? 1 : 0)
+        << " autoRepeat=" << (snap.autoRepeatActive ? 1 : 0)
         << " inSpellRange=" << (snap.inSpellRange ? 1 : 0)
         << " spellRange=" << snap.spellRange
         << " | cast=" << (snap.casting ? 1 : 0)
