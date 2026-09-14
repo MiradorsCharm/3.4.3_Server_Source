@@ -239,8 +239,14 @@ static bool BotMayStartMoving(Player* bot)
 
 static uint32 BotBlockingSpellId(Player* bot)
 {
-    for (uint32 type = 0; type < CURRENT_MAX_SPELL; ++type)
-        if (Spell* spell = bot->GetCurrentSpell(type))
+    // CURRENT_MELEE_SPELL (slot 0) is overloaded by the core as the
+    // "next auto-swing" / queued-melee-spell holder. It is populated even
+    // when the bot has no active cast and is just standing in its attack
+    // animation, which used to make the snapshot claim spell 5019
+    // (a warlock auto-swing entry) was blocking movement even though
+    // castBlocksMove=0. Skip that slot; everything else is a real cast.
+    for (uint8_t type = CURRENT_GENERIC_SPELL; type < CURRENT_MAX_SPELL; ++type)
+        if (Spell* spell = bot->GetCurrentSpell(static_cast<CurrentSpellTypes>(type)))
             return spell->GetSpellInfo()->Id;
 
     return 0;
@@ -268,6 +274,16 @@ CombatSnapshot PlayerbotAI::CaptureCombatSnapshot()
     snap.pacified = bot->HasUnitFlag(UNIT_FLAG_PACIFIED);
     snap.disarmed = bot->HasUnitFlag(UNIT_FLAG_DISARMED);
     snap.hasMeleeWeapon = bot->GetWeaponForAttack(BASE_ATTACK, true) != nullptr;
+    // A bot whose primary damage comes from a ranged attack (wand, bow, gun,
+    // or a pure-spell caster with no main-hand melee intent) must not be
+    // held to the melee "inMeleeRange && swingReady" gate below: when a
+    // caster is at 13 yards the core's melee swing correctly returns
+    // NotInRange, but that is not a stall.
+    snap.hasRangedAttack = bot->GetWeaponForAttack(RANGED_ATTACK, true) != nullptr
+        || (bot->GetClass() == CLASS_WARLOCK) || (bot->GetClass() == CLASS_MAGE)
+        || (bot->GetClass() == CLASS_PRIEST)
+        || (bot->GetClass() == CLASS_DRUID && !HasAnyAuraOf(bot, "cat form", "bear form", "dire bear form", nullptr))
+        || (bot->GetClass() == CLASS_HUNTER);
     snap.movementDisabled = bot->HasUnitState(UNIT_STATE_NOT_MOVE)
             || bot->HasAuraType(SPELL_AURA_MOD_CONFUSE) || bot->IsCharmed();
     snap.casting = bot->HasUnitState(UNIT_STATE_CASTING);
@@ -296,6 +312,25 @@ CombatSnapshot PlayerbotAI::CaptureCombatSnapshot()
         snap.sameMap = bot->IsInMap(target);
         snap.hasLOS = bot->IsWithinLOSInMap(target);
         snap.inArc = bot->HasInArc(2.0f * static_cast<float>(M_PI) / 3.0f, target);
+
+        // Ranged / caster reach envelope: same logic ReachSpellAction uses, but
+        // with the true spell cap so the stall detector can tell "happily casting
+        // from 13 yd" apart from "standing still and not doing anything at 13 yd".
+        snap.spellRange = sPlayerbotAIConfig.spellDistance;
+        // Hunters/wand users auto-shoot from 30+ yards; give casters the same
+        // benefit so a warlock who is out of Shadow Bolt range (30 yd) is reported
+        // as needing a *spell* approach, not as a melee stall.
+        if (snap.hasRangedAttack)
+        {
+            // Hunters/wand users auto-shoot from 30+ yards; pure casters with
+            // Shadow Bolt / Frostbolt / Wrath also top out at 30-40 yards. 30 yd
+            // is the Wrath cap for wand/bow/gun and most nukes; using that as the
+            // "in spell range" envelope means a warlock at 13 yd is no longer
+            // flagged as "out of swing range" by the melee stall detector, and a
+            // warlock at 35 yd is correctly reported as needing a spell approach.
+            snap.spellRange = 30.0f;
+        }
+        snap.inSpellRange = snap.distance3d <= snap.spellRange;
     }
 
     return snap;
@@ -410,9 +445,15 @@ void PlayerbotAI::UpdateCombatDiagnostics(uint32 elapsed)
         case CombatStallAction::RetryMove:
             // Drop the wedged movement so the next tick starts from scratch; a stale
             // generator that is "moving" without relocating the bot is otherwise
-            // permanent.
+            // permanent. Also wake the AI out of any WaitForReach()-imposed delay
+            // that was set against the old spline: without this, the combat tick
+            // would clear MM and StopMoving, then sit idle for seconds while
+            // nextAICheckDelay counted down, so the *new* approach was never
+            // actually issued - producing the exact "no generator and no live
+            // spline" message that triggered this retry in the first place.
             bot->GetMotionMaster()->Clear();
             bot->StopMoving();
+            SetNextCheckDelay(sPlayerbotAIConfig.reactDelay);
             break;
         case CombatStallAction::DropTarget:
             bot->AttackStop();

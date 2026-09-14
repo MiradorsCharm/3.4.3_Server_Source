@@ -50,7 +50,23 @@ namespace ai
     class EnemyOutOfSpellRangeTrigger : public OutOfRangeTrigger
 	{
     public:
-        EnemyOutOfSpellRangeTrigger(PlayerbotAI* ai) : OutOfRangeTrigger(ai, "enemy out of spell range", sPlayerbotAIConfig.spellDistance) {}
+        EnemyOutOfSpellRangeTrigger(PlayerbotAI* ai) : OutOfRangeTrigger(ai, "enemy out of spell range", EffectiveSpellDistance(ai)) {}
+    private:
+        static float EffectiveSpellDistance(PlayerbotAI* ai)
+        {
+            Player* bot = ai->GetBot();
+            if (!bot)
+                return sPlayerbotAIConfig.spellDistance;
+            // Mirror ReachSpellAction: wand/bow/gun users and pure casters can
+            // cast out to ~30 yd; if the trigger uses the old 25 yd threshold
+            // they never walk in for a 28-30 yd Shadow Bolt and the core keeps
+            // rejecting the cast with SPELL_FAILED_OUT_OF_RANGE.
+            if (bot->GetWeaponForAttack(RANGED_ATTACK, true) != nullptr
+                || bot->GetClass() == CLASS_WARLOCK || bot->GetClass() == CLASS_MAGE
+                || bot->GetClass() == CLASS_PRIEST || bot->GetClass() == CLASS_HUNTER)
+                return 28.0f;
+            return sPlayerbotAIConfig.spellDistance;
+        }
     };
 
     class PartyMemberToHealOutOfSpellRangeTrigger : public OutOfRangeTrigger

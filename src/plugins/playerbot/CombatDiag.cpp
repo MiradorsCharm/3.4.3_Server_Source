@@ -43,10 +43,24 @@ CombatStall ai::EvaluateCombatStall(CombatSnapshot const& snap)
     // teleport are listed here on purpose: none of them show up in the range/arc/
     // timer numbers, and a bot sitting in one of them is exactly the "standing in
     // its attack animation, doing nothing" report.
-    bool const coreIsHappy = snap.inMeleeRange && snap.attackState && snap.swingReady
+    bool const meleeCoreIsHappy = snap.inMeleeRange && snap.attackState && snap.swingReady
         && snap.hasLOS && snap.inArc && snap.swingError.empty()
         && !snap.pacified && !snap.disarmed && !snap.teleported;
-    if (coreIsHappy)
+    // Ranged/caster bots never enter melee range by design. A caster standing
+    // at spell range casting bolts or auto-shot is "in combat" even though
+    // every melee flag in the snapshot is unhappy; do not treat that as a
+    // stall. UNIT_STATE_MELEE_ATTACKING can still be set because Attack() was
+    // called on pull - the server shows the melee-attacking animation while
+    // auto-shoot / wand / spells do the real damage.
+    // A ranged bot "in spell range" but actually *inside* melee range is in the
+    // 5-yd dead zone (auto-shot cannot fire, melee interrupts casts) - that is
+    // not a happy state, it is its own stall (handled below as the dead-zone
+    // branch). Exclude inMeleeRange from the happy gate.
+    bool const rangedCoreIsHappy = snap.hasRangedAttack && snap.inSpellRange
+        && !snap.inMeleeRange
+        && snap.hasLOS && snap.inArc
+        && !snap.pacified && !snap.disarmed && !snap.teleported;
+    if (meleeCoreIsHappy || rangedCoreIsHappy)
         return stall;
 
     if (snap.stallMs < COMBAT_STALL_MS)
@@ -113,8 +127,12 @@ CombatStall ai::EvaluateCombatStall(CombatSnapshot const& snap)
         return stall;
     }
 
-    if (!snap.inMeleeRange)
+    if (!snap.inMeleeRange && (!snap.hasRangedAttack || !snap.inSpellRange))
     {
+        bool const outOfSpellRange = snap.hasRangedAttack && !snap.inSpellRange;
+        float const allowedRange = outOfSpellRange ? snap.spellRange : snap.meleeRange;
+        char const* rangeKind = outOfSpellRange ? "spell" : "swing";
+
         std::ostringstream out;
         // Two decimals: these numbers are compared against the swing envelope by
         // eye in the log, and "3.000000" pushes the useful half of the line off it.
@@ -123,15 +141,18 @@ CombatStall ai::EvaluateCombatStall(CombatSnapshot const& snap)
         if (!snap.canMoveNow)
         {
             stall.report = true;
+            // Melee-only bots that cannot move at all cannot ever reach their
+            // victim; ranged/caster bots outside spell range *and* unable to move
+            // are in the same boat - drop target rather than retry forever.
             stall.action = CombatStallAction::DropTarget;
-            out << "out of swing range (3D " << snap.distance3d << " yd vs " << snap.meleeRange
+            out << "out of " << rangeKind << " range (3D " << snap.distance3d << " yd vs " << allowedRange
                 << " yd) and the bot may not start moving at all";
         }
         else if (!snap.movingNow)
         {
             stall.report = true;
             stall.action = CombatStallAction::RetryMove;
-            out << "out of swing range (3D " << snap.distance3d << " yd vs " << snap.meleeRange
+            out << "out of " << rangeKind << " range (3D " << snap.distance3d << " yd vs " << allowedRange
                 << " yd) and no approach is running: no movement generator and no live spline";
             if (snap.runSpeed < 0.5f)
                 out << ", and MOVE_RUN speed is " << snap.runSpeed << " - the bot cannot walk anywhere";
@@ -141,10 +162,10 @@ CombatStall ai::EvaluateCombatStall(CombatSnapshot const& snap)
             stall.report = true;
             stall.action = CombatStallAction::RetryMove;
             out << "the approach is running but the gap is not closing (3D " << snap.distance3d
-                << " yd vs " << snap.meleeRange << " yd allowed";
+                << " yd vs " << allowedRange << " yd allowed";
             if (snap.zGap > 1.5f)
                 out << ", and the target is " << snap.zGap
-                    << " yd above/below: the swing test is 3D while the AI steers by planar distance";
+                    << " yd above/below: the " << rangeKind << " test is 3D while the AI steers by planar distance";
             out << " - a chase stuck against terrain looks exactly like a bot that refuses to fight";
         }
 
@@ -162,12 +183,26 @@ CombatStall ai::EvaluateCombatStall(CombatSnapshot const& snap)
         return stall;
     }
 
-    if (!snap.attackState)
+    if (!snap.attackState && !snap.hasRangedAttack)
     {
         stall.report = true;
         stall.action = CombatStallAction::RetryMove;
         stall.reason = "in swing range with no melee-attack state: AttackStart() never reached the core, "
             "so DoMeleeAttackIfReady() returns at its first line";
+        return stall;
+    }
+
+    // If a bot with a ranged weapon actually made it INTO melee range, it
+    // cannot shoot/cast (5-yd dead zone on ranged weapons, melee interrupts
+    // on casts) - but it also isn't swinging. Walk it back out to spell
+    // range instead of reporting it as a mysterious "nothing happening"
+    // stall. Reported as an actionable RetryMove so the next tick issues
+    // a kite/back-off.
+    if (snap.hasRangedAttack && snap.inMeleeRange)
+    {
+        stall.report = true;
+        stall.action = CombatStallAction::RetryMove;
+        stall.reason = "ranged bot inside melee range (5-yd dead zone); cannot shoot and cannot swing";
         return stall;
     }
 
@@ -216,6 +251,9 @@ std::string ai::FormatCombatSnapshot(CombatSnapshot const& snap)
         << " pacified=" << (snap.pacified ? 1 : 0)
         << " disarmed=" << (snap.disarmed ? 1 : 0)
         << " weapon=" << (snap.hasMeleeWeapon ? 1 : 0)
+        << " ranged=" << (snap.hasRangedAttack ? 1 : 0)
+        << " inSpellRange=" << (snap.inSpellRange ? 1 : 0)
+        << " spellRange=" << snap.spellRange
         << " | cast=" << (snap.casting ? 1 : 0)
         << " castBlocksMove=" << (snap.movementBlockedByCast ? 1 : 0)
         << " spell=" << snap.blockingSpell

@@ -40,6 +40,9 @@ namespace ai
         bool movingNow = false;               // generator or live spline is driving the bot
         bool canMoveNow = false;              // the AI's own "am I allowed to start moving"
         float runSpeed = 0.0f;
+        bool hasRangedAttack = false;         // bow/gun/wand/warglaive equipped for RANGED_ATTACK
+        bool inSpellRange = false;            // target within spell/ranged distance (30 yd wand/bolt)
+        float spellRange = 0.0f;              // max range of whatever ranged attack the bot has
 
         std::string swingError;               // the core's AttackSwingErr, as text
         std::string trace;                    // AI action trace of the last tick
