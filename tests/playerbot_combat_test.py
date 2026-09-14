@@ -13,6 +13,24 @@ why. Two source-level facts caused it, and both are pinned here:
   action returns success every tick, so the bot kept its attack stance and never
   chased.
 
+A third, worse metric bug is pinned here as well (the "none of my bots can
+attack" report): the core's gates are all CENTRE-TO-CENTRE yards
+(IsWithinMeleeRangeAt tests GetExactDist against GetMeleeRange;
+Spell::CheckRange tests GetExactDist against the spell range), but the bot
+steered by surface-compensated yards (GetDistance/GetDistance2d subtract both
+combat reaches). A bot told to stop at "3 yd" of compensated distance stands
+5.5-7 yd centre-to-centre - permanently outside its own swing envelope, logging
+NotInRange next to "3D 3.69 yd vs 5.00 yd" - and the final approach step (any
+step under ~2 yd raw) was swallowed by MoveTo()'s contact gate, which
+subtracted the bot's reach AGAIN. So the approach either never started or
+parked just out of range; every bot, every mob.
+
+Also pinned here: ranged bots had "too far" behaviour but no "too close"
+behaviour, so a ranged bot pulled into melee range stood in the dead zone
+unable to shoot (min range), cast (interrupted) or swing (the wedged
+auto-repeat spell pauses the combat timers) - "no actions executed" with a live
+target two yards away.
+
 Also pinned here: the stall report is rate limited (a stuck realm must stay
 readable), and the random-bot name pool is operator data - the auto-filler that
 generated and INSERTed names was removed because it spammed the console.
@@ -122,6 +140,96 @@ class MeleeRangeSourceTest(unittest.TestCase):
         self.assertIn("GetMeleeApproachDistance", reach)
         attack = function_body(f"{PLUGIN}/strategy/actions/AttackAction.cpp", "bool AttackAction::Attack(Unit* target)")
         self.assertIn("ApproachForMelee", attack)
+
+
+class CentreToCentreMetricTest(unittest.TestCase):
+    """The core's gates are centre-to-centre yards; the bot must measure the same.
+
+    Unit::IsWithinMeleeRangeAt() compares GetExactDist against GetMeleeRange()
+    and Spell::CheckRange() compares GetExactDist against the spell's range. The
+    bot used GetDistance/GetDistance2d - which subtract both combat reaches - to
+    decide where to stop and whether it had arrived. That is 2-4 yards of
+    disagreement per pair of units: bots stopped "in range" by their own numbers
+    and were refused every swing, and the last step of every chase was eaten by
+    the contact gate (which subtracted the bot's reach a second time). This is
+    the "Bot X is locked onto Y ... out of swing range (3D 3.69 yd vs 5.00 yd)
+    ... no approach is running" family of stalls.
+    """
+
+    def test_unit_move_to_measures_the_stop_centre_to_centre(self):
+        body = function_body(f"{PLUGIN}/strategy/actions/MovementActions.cpp",
+                             "bool MovementAction::MoveTo(Unit* target, float distance)")
+        self.assertIn("bot->GetExactDist2d(target)", body)
+        self.assertNotIn("bot->GetDistance2d(target)", body,
+                         "surface-compensated distance must not decide where a bot stops")
+
+    def test_point_move_to_contact_gate_is_not_reach_compensated(self):
+        body = function_body(f"{PLUGIN}/strategy/actions/MovementActions.cpp",
+                             "bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z)")
+        self.assertIn("bot->GetExactDist2d(x, y)", body)
+        self.assertNotIn("bot->GetDistance2d(x, y)", body,
+                         "the 'already there' gate used to swallow every final approach "
+                         "step smaller than the bot's own combat reach + contactDistance")
+
+    def test_melee_approach_feeds_raw_numbers_and_the_reach_sum(self):
+        body = function_body(f"{PLUGIN}/strategy/actions/MovementActions.cpp",
+                             "float MovementAction::GetMeleeApproachDistance(Unit* target) const")
+        self.assertIn("ComputeMeleeStopDistance", body)
+        self.assertIn("bot->GetExactDist2d(target)", body)
+        self.assertIn("bot->GetCombatReach() + target->GetCombatReach()", body,
+                      "the configured stance is a surface gap; converting it to a "
+                      "centre-to-centre stop needs the combined combat reach")
+
+    def test_spell_reach_uses_the_cores_own_distance_call(self):
+        body = class_body(f"{PLUGIN}/strategy/actions/ReachTargetActions.h", "class ReachSpellAction")
+        self.assertIn("bot->GetExactDist(target)", body)
+        self.assertNotIn("bot->GetDistance(target)", body)
+
+    def test_stall_report_prints_one_consistent_metric(self):
+        """d3d and melee= must be comparable: the old report printed a
+        compensated distance next to a raw envelope ("3D 3.69 yd vs 5.00 yd"),
+        contradicting its own inRange flag."""
+        body = function_body(f"{PLUGIN}/PlayerbotAI.cpp", "CombatSnapshot PlayerbotAI::CaptureCombatSnapshot()")
+        self.assertIn("bot->GetExactDist(target)", body)
+        self.assertNotIn("bot->GetDistance(target)", body)
+
+
+class RangedDeadZoneTest(unittest.TestCase):
+    """A ranged bot inside melee range has to walk back out, not stand frozen."""
+
+    def test_dead_zone_trigger_and_action_are_registered(self):
+        self.assertIn('creators["enemy inside ranged dead zone"]',
+                      read(f"{PLUGIN}/strategy/triggers/TriggerContext.h"))
+        self.assertIn("EnemyInsideRangedDeadZoneTrigger",
+                      read(f"{PLUGIN}/strategy/triggers/RangeTriggers.h"))
+        self.assertIn('creators["back to range"]',
+                      read(f"{PLUGIN}/strategy/actions/ActionContext.h"))
+        self.assertIn("MoveBackToRangeAction", read(f"{PLUGIN}/strategy/actions/MovementActions.h"))
+
+    def test_dead_zone_trigger_only_fires_for_ranged_bots(self):
+        body = class_body(f"{PLUGIN}/strategy/triggers/RangeTriggers.h",
+                          "class EnemyInsideRangedDeadZoneTrigger")
+        self.assertIn("IsRanged", body)
+        self.assertIn("GetExactDist", body)
+
+    def test_dead_zone_escape_is_wired_into_the_base_combat_strategy(self):
+        """Priests, shamans and caster druids do not derive from
+        RangedCombatStrategy, so the escape has to live in CombatStrategy -
+        the base of every class combat strategy - or those bots keep standing
+        nose-to-nose with the mob unable to shoot, cast or swing."""
+        body = function_body(f"{PLUGIN}/strategy/generic/CombatStrategy.cpp",
+                             "void CombatStrategy::InitTriggers")
+        self.assertIn('"enemy inside ranged dead zone"', body)
+        self.assertIn('"back to range"', body)
+
+    def test_back_to_range_moves_away_from_the_target(self):
+        body = function_body(f"{PLUGIN}/strategy/actions/MovementActions.cpp",
+                             "bool MoveBackToRangeAction::Execute(Event event)")
+        self.assertIn("MoveTo(target, backTo)", body)
+        useful = function_body(f"{PLUGIN}/strategy/actions/MovementActions.cpp",
+                               "bool MoveBackToRangeAction::isUseful()")
+        self.assertIn("IsRanged", useful)
+        self.assertIn("GetExactDist", useful)
 
 
 class StrategyWiringTest(unittest.TestCase):

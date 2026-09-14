@@ -35,12 +35,37 @@ namespace
     // keep missing columns (e.g. `gender` in ai_playerbot_names, `owner` in
     // the event tables) forever - every query against them then fails at BEST
     // (and used to abort the server). Create missing tables, add missing
-    // columns and repair a missing primary key; anything that cannot be added
-    // (e.g. a PK that would collapse duplicate legacy rows) is logged as an
-    // error instead of crashing.
+    // columns, repair a missing primary key and realign a foreign table
+    // collation (the name lookups JOIN these tables against characters/guild,
+    // and MySQL refuses mixed-collation comparisons with errno 1267); anything
+    // that cannot be added (e.g. a PK that would collapse duplicate legacy
+    // rows) is logged as an error instead of crashing.
     void EnsureBotTable(BotTableSpec const& spec)
     {
         CharacterDatabase.PExecute("{}", spec.createSql);
+
+        // Collation self-repair: the JOINs the name pickers run compare
+        // ai_playerbot_*.name with characters.name / guild.name. A table that
+        // was created before the explicit COLLATE above (or by a database whose
+        // default collation is MySQL 8's utf8mb4_0900_ai_ci) makes every one of
+        // those JOINs fail with errno 1267 "Illegal mix of collations", which
+        // used to surface as "No more names left for random guilds" while
+        // plenty of names were left. Convert once, here, instead of leaving the
+        // install broken until someone finds the right ALTER by hand.
+        QueryResult wrongCollation = CharacterDatabase.PQuery(
+                "SELECT 1 FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}' "
+                "AND TABLE_COLLATION <> 'utf8mb4_unicode_ci'", spec.name);
+        if (wrongCollation && wrongCollation->GetRowCount())
+        {
+            TC_LOG_ERROR("playerbot",
+                    "Playerbot table `{}` was created with a foreign collation - "
+                    "converting it to utf8mb4_unicode_ci (mismatched collations break "
+                    "the name lookups with errno 1267)", spec.name);
+            CharacterDatabase.PExecute(
+                    "ALTER TABLE `{}` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+                    spec.name);
+        }
 
         for (size_t i = 0; i < spec.columnCount; ++i)
         {
@@ -136,20 +161,20 @@ namespace
                 "`time` INT UNSIGNED NOT NULL DEFAULT 0, `validIn` INT UNSIGNED NOT NULL DEFAULT 0,"
                 "`event` VARCHAR(64) NOT NULL DEFAULT '', `value` INT UNSIGNED NOT NULL DEFAULT 0,"
                 "PRIMARY KEY (`owner`, `bot`, `event`), KEY `idx_event` (`event`), KEY `idx_bot` (`bot`)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
                 randomBotsColumns, sizeof(randomBotsColumns) / sizeof(randomBotsColumns[0]), "(`owner`, `bot`, `event`)" },
             { "ai_playerbot_names",
                 "CREATE TABLE IF NOT EXISTS `ai_playerbot_names` ("
                 "`name_id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `name` VARCHAR(12) NOT NULL,"
                 "`gender` TINYINT UNSIGNED NOT NULL DEFAULT 0,"
                 "PRIMARY KEY (`name_id`), UNIQUE KEY `idx_name` (`name`)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
                 namesColumns, sizeof(namesColumns) / sizeof(namesColumns[0]), nullptr },
             { "ai_playerbot_guild_names",
                 "CREATE TABLE IF NOT EXISTS `ai_playerbot_guild_names` ("
                 "`name_id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `name` VARCHAR(24) NOT NULL,"
                 "PRIMARY KEY (`name_id`), UNIQUE KEY `idx_name` (`name`)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
                 guildNamesColumns, sizeof(guildNamesColumns) / sizeof(guildNamesColumns[0]), nullptr },
             { "ai_playerbot_guild_tasks",
                 "CREATE TABLE IF NOT EXISTS `ai_playerbot_guild_tasks` ("
@@ -157,26 +182,26 @@ namespace
                 "`time` INT UNSIGNED NOT NULL DEFAULT 0, `validIn` INT UNSIGNED NOT NULL DEFAULT 0,"
                 "`type` VARCHAR(32) NOT NULL DEFAULT '', `value` INT UNSIGNED NOT NULL DEFAULT 0,"
                 "PRIMARY KEY (`owner`, `guildid`, `type`), KEY `idx_guild` (`guildid`)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
                 guildTasksColumns, sizeof(guildTasksColumns) / sizeof(guildTasksColumns[0]), "(`owner`, `guildid`, `type`)" },
             { "ai_playerbot_speech",
                 "CREATE TABLE IF NOT EXISTS `ai_playerbot_speech` ("
                 "`id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `name` VARCHAR(64) NOT NULL,"
                 "`text` VARCHAR(255) NOT NULL, `type` VARCHAR(16) NOT NULL DEFAULT 'say',"
                 "PRIMARY KEY (`id`), KEY `idx_name` (`name`)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
                 speechColumns, sizeof(speechColumns) / sizeof(speechColumns[0]), nullptr },
             { "ai_playerbot_speech_probability",
                 "CREATE TABLE IF NOT EXISTS `ai_playerbot_speech_probability` ("
                 "`name` VARCHAR(64) NOT NULL, `probability` INT UNSIGNED NOT NULL DEFAULT 0,"
                 "PRIMARY KEY (`name`)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
                 speechProbabilityColumns, sizeof(speechProbabilityColumns) / sizeof(speechProbabilityColumns[0]), "(`name`)" },
             { "ai_playerbot_custom_strategy",
                 "CREATE TABLE IF NOT EXISTS `ai_playerbot_custom_strategy` ("
                 "`name` VARCHAR(64) NOT NULL, `action_line` VARCHAR(255) NOT NULL,"
                 "PRIMARY KEY (`name`, `action_line`)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
                 customStrategyColumns, sizeof(customStrategyColumns) / sizeof(customStrategyColumns[0]), "(`name`, `action_line`)" },
         };
 

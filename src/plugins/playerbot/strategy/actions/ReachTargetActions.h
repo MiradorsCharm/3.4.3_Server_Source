@@ -94,8 +94,11 @@ namespace ai
             // class uses) so the bot does not decide "I'm in range" because
             // planar distance says 24 yd when the actual 3D gap (on a slope, a
             // ledge, a boat deck or a ramp) is 26 yd and the spell's range
-            // check will reject it.
-            return bot->GetDistance(target) > (distance + sPlayerbotAIConfig.contactDistance);
+            // check will reject it. GetExactDist is centre-to-centre - the very
+            // call Spell::CheckRange() makes - while the "distance" value (and
+            // GetDistance, which subtracts both combat reaches) reads up to
+            // three yards short of what the core tests against.
+            return bot->GetExactDist(target) > (distance + sPlayerbotAIConfig.contactDistance);
         }
 
         virtual bool isPossible()
@@ -103,7 +106,7 @@ namespace ai
             Unit* target = GetTarget();
             if (!target)
                 return false;
-            return bot->GetDistance(target) <= (distance + sPlayerbotAIConfig.contactDistance)
+            return bot->GetExactDist(target) <= (distance + sPlayerbotAIConfig.contactDistance)
                 || IsMovingAllowed(target);
         }
 

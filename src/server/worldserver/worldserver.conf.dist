@@ -4512,6 +4512,11 @@ AiPlayerbot.IterationsPerTick = 10
 #
 #    AI distances (yards)
 #        Description: Distances for perception, spells, grinding, looting, fleeing and following.
+#                     MeleeDistance is a stance cap measured from the target's
+#                     surface (how close a bot may plant itself), not the swing
+#                     range: the actual melee stop is computed from the core's own
+#                     swing envelope (Unit::IsWithinMeleeRange, centre-to-centre)
+#                     so the bot always stands where its swings can land.
 #        Default:     Values below match the built-in defaults.
 
 AiPlayerbot.SightDistance = 50.0

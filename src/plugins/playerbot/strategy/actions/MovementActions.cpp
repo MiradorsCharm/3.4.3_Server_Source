@@ -44,7 +44,12 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z)
     if (!IsMovingAllowed(mapId, x, y, z))
         return false;
 
-    float distance = bot->GetDistance2d(x, y);
+    // Raw (centre-to-centre) distance to the step destination. GetDistance2d()
+    // subtracts the bot's own combat reach, so a step of one and a half yards
+    // used to measure as "already there" (< contactDistance) and was silently
+    // dropped - the final approach step of every chase died here, which is the
+    // "no approach is running: no movement generator and no live spline" stall.
+    float distance = bot->GetExactDist2d(x, y);
     if (distance > sPlayerbotAIConfig.contactDistance)
     {
         // Reach/follow actions run every AI tick: tearing down and relaunching
@@ -88,7 +93,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z)
         bot->StopMoving();
 
         float botZ = bot->GetPositionZ();
-        if (z - botZ > 0.5f && bot->GetDistance2d(x, y) <= 5.0f)
+        if (z - botZ > 0.5f && bot->GetExactDist2d(x, y) <= 5.0f)
         {
             float speed = bot->GetSpeed(MOVE_RUN);
             mm.MoveJump(x, y, botZ + 0.5f, speed, speed, 1);
@@ -117,7 +122,13 @@ bool MovementAction::MoveTo(Unit* target, float distance)
     float ty = target->GetPositionY();
     float tz = target->GetPositionZ();
 
-    float distanceToTarget = bot->GetDistance2d(target);
+    // The stop distance is centre-to-centre (raw) planar yards - the metric of
+    // the core's own gates (Unit::IsWithinMeleeRangeAt() and Spell::CheckRange()
+    // both use GetExactDist*). The old GetDistance2d() here subtracted both
+    // combat reaches, so a "distance" handed in by the reach actions was
+    // interpreted as a surface gap: bots stopped 2-4 yards short of where any
+    // swing or spell is allowed to land and never noticed.
+    float distanceToTarget = bot->GetExactDist2d(target);
     float angle = bot->GetAbsoluteAngle(target);
     float needToGo = distanceToTarget - distance;
 
@@ -204,8 +215,15 @@ float MovementAction::GetMeleeApproachDistance(Unit* target) const
     if (!target)
         return sPlayerbotAIConfig.meleeDistance;
 
-    return ComputeMeleeStopDistance(bot->GetMeleeRange(target), bot->GetDistance(target),
-            bot->GetPositionZ() - target->GetPositionZ(), sPlayerbotAIConfig.meleeDistance);
+    // Centre-to-centre numbers only: the core's swing envelope is measured raw
+    // (Unit::IsWithinMeleeRangeAt), so both the current gap and the pair's
+    // combined combat reach have to be fed to the stop calculator in that
+    // metric. A stop computed from surface-compensated distances
+    // (GetDistance*/GetDistance2d subtract both reaches) is what planted every
+    // bot outside its own swing envelope.
+    return ComputeMeleeStopDistance(bot->GetMeleeRange(target), bot->GetExactDist2d(target),
+            std::fabs(bot->GetPositionZ() - target->GetPositionZ()),
+            bot->GetCombatReach() + target->GetCombatReach(), sPlayerbotAIConfig.meleeDistance);
 }
 
 bool MovementAction::ApproachForMelee(Unit* target)
@@ -219,7 +237,16 @@ bool MovementAction::ApproachForMelee(Unit* target)
     if (!IsMovingAllowed(target))
         return false;
 
-    return MoveTo(target, GetMeleeApproachDistance(target));
+    if (MoveTo(target, GetMeleeApproachDistance(target)))
+        return true;
+
+    // The planar budget can be eaten entirely by the Z gap (a target on a ledge
+    // right above the bot): the leftover step is then smaller than MoveTo()'s
+    // contact gate while the swing test still fails. Walk to the target's own
+    // contact ring as a last resort - collision keeps the bot outside the model,
+    // and the reach triggers keep re-firing for as long as the swing test says
+    // no, so this cannot loop forever against a genuinely unreachable target.
+    return MoveNear(target, sPlayerbotAIConfig.contactDistance);
 }
 
 bool MovementAction::Follow(Unit* target, float distance)
@@ -426,6 +453,36 @@ bool MoveOutOfEnemyContactAction::Execute(Event event)
 bool MoveOutOfEnemyContactAction::isUseful()
 {
     return AI_VALUE2(float, "distance", "current target") < (sPlayerbotAIConfig.meleeDistance + sPlayerbotAIConfig.contactDistance);
+}
+
+bool MoveBackToRangeAction::isUseful()
+{
+    // Only a ranged bot belongs at casting range; melee bots never back off
+    // from their victim.
+    if (!ai->IsRanged(bot))
+        return false;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    return target && bot->GetExactDist(target) < 11.0f;
+}
+
+bool MoveBackToRangeAction::Execute(Event event)
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target)
+        return false;
+
+    if (!IsMovingAllowed(target))
+        return false;
+
+    // MoveTo() with a stop distance larger than the current gap walks backwards.
+    // Back off to well past every ranged minimum range (Shoot/wand is 8 yd) and
+    // comfortably inside every nuke's maximum (25-40 yd): spellDistance / 2 with
+    // a floor that keeps it clear of the dead zone even for tiny configured
+    // spell distances. MoveTo() also cancels whatever cast is wedged (CastStop
+    // covers the stuck wand auto-repeat that freezes the combat timers).
+    float backTo = std::max(sPlayerbotAIConfig.spellDistance / 2.0f, sPlayerbotAIConfig.tooCloseDistance + 8.0f);
+    return MoveTo(target, backTo);
 }
 
 bool SetFacingTargetAction::Execute(Event event)

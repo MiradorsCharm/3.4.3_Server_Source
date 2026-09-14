@@ -4,6 +4,11 @@
 -- Apply this file to your characters database:
 --   mysql -u trinity -p characters < sql/custom/playerbot/characters_playerbot.sql
 --
+-- Every table carries an explicit COLLATE utf8mb4_unicode_ci on purpose: it is
+-- the collation of the core tables these JOIN against (characters, guild), and
+-- a table left to the database default (utf8mb4_0900_ai_ci on MySQL 8) makes
+-- every name lookup fail with errno 1267 "Illegal mix of collations".
+--
 
 -- Random bot bookkeeping (login/logout/randomize/teleport schedules).
 CREATE TABLE IF NOT EXISTS `ai_playerbot_random_bots` (
@@ -16,7 +21,7 @@ CREATE TABLE IF NOT EXISTS `ai_playerbot_random_bots` (
     PRIMARY KEY (`owner`, `bot`, `event`),
     KEY `idx_event` (`event`),
     KEY `idx_bot` (`bot`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Playerbot random bot events';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot random bot events';
 
 -- Pool of names used when random bot characters are created.
 CREATE TABLE IF NOT EXISTS `ai_playerbot_names` (
@@ -25,7 +30,7 @@ CREATE TABLE IF NOT EXISTS `ai_playerbot_names` (
     `gender` TINYINT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (`name_id`),
     UNIQUE KEY `idx_name` (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Playerbot random character names';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot random character names';
 
 -- Pool of names used when random bot guilds are created.
 CREATE TABLE IF NOT EXISTS `ai_playerbot_guild_names` (
@@ -33,7 +38,7 @@ CREATE TABLE IF NOT EXISTS `ai_playerbot_guild_names` (
     `name` VARCHAR(24) NOT NULL,
     PRIMARY KEY (`name_id`),
     UNIQUE KEY `idx_name` (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Playerbot random guild names';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot random guild names';
 
 -- Guild tasks handed out by bot guilds.
 CREATE TABLE IF NOT EXISTS `ai_playerbot_guild_tasks` (
@@ -45,7 +50,7 @@ CREATE TABLE IF NOT EXISTS `ai_playerbot_guild_tasks` (
     `value` INT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (`owner`, `guildid`, `type`),
     KEY `idx_guild` (`guildid`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Playerbot guild tasks';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot guild tasks';
 
 -- Free form chatter used by the "chat" strategy.
 CREATE TABLE IF NOT EXISTS `ai_playerbot_speech` (
@@ -55,20 +60,20 @@ CREATE TABLE IF NOT EXISTS `ai_playerbot_speech` (
     `type` VARCHAR(16) NOT NULL DEFAULT 'say',
     PRIMARY KEY (`id`),
     KEY `idx_name` (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Playerbot chatter';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot chatter';
 
 CREATE TABLE IF NOT EXISTS `ai_playerbot_speech_probability` (
     `name` VARCHAR(64) NOT NULL,
     `probability` INT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Playerbot chatter probability';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot chatter probability';
 
 -- User defined strategies (".bot strategy" / "co +custom::<name>").
 CREATE TABLE IF NOT EXISTS `ai_playerbot_custom_strategy` (
     `name` VARCHAR(64) NOT NULL,
     `action_line` VARCHAR(255) NOT NULL,
     PRIMARY KEY (`name`, `action_line`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Playerbot custom strategies';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot custom strategies';
 
 -- A handful of starter names so random bots can be created out of the box.
 INSERT IGNORE INTO `ai_playerbot_names` (`name`) VALUES

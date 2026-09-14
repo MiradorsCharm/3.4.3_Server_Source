@@ -95,6 +95,20 @@ namespace ai
         virtual bool isUseful();
     };
 
+    // The ranged counterpart of "reach melee": a ranged bot that was pulled (or
+    // chased) into melee range is in the dead zone - Shoot/wand cannot fire
+    // inside its minimum range, casts get interrupted, and the wedged
+    // auto-repeat spell even pauses the combat timers, so the bot cannot swing
+    // either. It has to walk back out before anything it wants to do is
+    // possible again.
+    class MoveBackToRangeAction : public MovementAction
+    {
+    public:
+        MoveBackToRangeAction(PlayerbotAI* ai) : MovementAction(ai, "back to range") {}
+        virtual bool Execute(Event event);
+        virtual bool isUseful();
+    };
+
     class SetFacingTargetAction : public MovementAction
     {
     public:

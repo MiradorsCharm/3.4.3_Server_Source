@@ -301,7 +301,13 @@ CombatSnapshot PlayerbotAI::CaptureCombatSnapshot()
 
     if (target)
     {
-        snap.distance3d = bot->GetDistance(target);
+        // Centre-to-centre 3D distance, exactly like the core's own gates
+        // (IsWithinMeleeRangeAt tests GetExactDist against GetMeleeRange,
+        // Spell::CheckRange tests GetExactDist against the spell range). The
+        // old GetDistance() here subtracts both combat reaches, which printed
+        // lines like "3D 3.69 yd vs 5.00 yd ... inRange=0" - two numbers in
+        // different metrics that made the report contradict itself.
+        snap.distance3d = bot->GetExactDist(target);
         // absolute: a bot standing above its target is the same trap as one below
         snap.zGap = std::fabs(bot->GetPositionZ() - target->GetPositionZ());
         snap.meleeRange = bot->GetMeleeRange(target);

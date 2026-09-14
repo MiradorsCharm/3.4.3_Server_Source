@@ -226,18 +226,40 @@ try
     CHECK(contains(FormatCombatSnapshot(traced), "A:reach melee - OK"));
 
     // --- where a melee bot must plant itself -----------------------------------
-    // Flat ground, generous swing envelope: keep the configured stance distance.
-    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 20.0f, 0.0f, 3.0f) - 3.0f) < 0.01f);
-    // Slope: 4.1 yd of height eats the whole envelope, so walk much closer.
-    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 6.4f, 4.1f, 3.0f) - 1.5f) < 0.01f);
-    // Never closer than 1.5 yd (inside the model the swing test is meaningless and
-    // the bot shuffles), even when the arithmetic asks for it.
-    CHECK(std::fabs(ComputeMeleeStopDistance(2.0f, 10.0f, 0.0f, 3.0f) - 1.5f) < 0.01f);
-    CHECK(std::fabs(ComputeMeleeStopDistance(0.0f, 10.0f, 0.0f, 3.0f) - 1.5f) < 0.01f);
+    // Every number is centre-to-centre (raw) planar yards, the metric of the
+    // core's own swing envelope; combinedReach is attacker + victim combat
+    // reach. THE regression this signature exists for: the legacy math fed a
+    // surface-compensated distance (GetDistance already subtracts both reaches)
+    // into a raw envelope and returned a surface-compensated stop, so bots
+    // planted themselves outside swing range while their own numbers claimed
+    // "in range" (log: "3D 3.69 yd vs 5.00 yd", inRange=0).
+    // Flat ground, generous swing envelope: stop one yard inside the envelope.
+    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 20.0f, 0.0f, 2.8f, 3.0f) - 4.0f) < 0.01f);
+    // ...and never deeper than the configured stance measured from the
+    // target's SURFACE (reach + configured), not from its centre.
+    CHECK(std::fabs(ComputeMeleeStopDistance(12.0f, 30.0f, 0.0f, 6.0f, 1.8f) - 7.8f) < 0.01f);
+    // Slope: 4.1 yd of height eats the planar budget, so walk much closer -
+    // but never inside the model.
+    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 6.4f, 4.1f, 2.8f, 3.0f) - 1.5f) < 0.01f);
+    // Never inside the model for big-reach pairs, even when the arithmetic
+    // asks for it (the swing test is meaningless there and the bot shuffles).
+    CHECK(std::fabs(ComputeMeleeStopDistance(2.0f, 10.0f, 0.0f, 6.0f, 3.0f) - 4.5f) < 0.01f);
+    CHECK(std::fabs(ComputeMeleeStopDistance(0.0f, 10.0f, 0.0f, 1.0f, 3.0f) - 1.5f) < 0.01f);
     // Never further away than it already is: that would back the bot up.
-    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 2.0f, 0.0f, 3.0f) - 2.0f) < 0.01f);
+    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 2.0f, 0.0f, 2.8f, 3.0f) - 2.0f) < 0.01f);
     // A tighter stance than the envelope allows is honoured, not widened.
-    CHECK(std::fabs(ComputeMeleeStopDistance(8.0f, 30.0f, 0.0f, 1.8f) - 1.8f) < 0.01f);
+    CHECK(std::fabs(ComputeMeleeStopDistance(8.0f, 30.0f, 0.0f, 6.0f, 1.8f) - 7.0f) < 0.01f);
+    // Whatever the inputs, the stop must land inside the 3D swing envelope
+    // (GetMeleeRange = max(reach + 4/3, 5), minus one yard of slop) and never
+    // inside the target's model.
+    for (float reach : { 0.0f, 1.0f, 2.8f, 6.0f })
+        for (float zGap : { 0.0f, 1.5f, 3.0f })
+        {
+            float envelope = std::max(reach + 4.0f / 3.0f, 5.0f);
+            float stop = ComputeMeleeStopDistance(envelope, 40.0f, zGap, reach, 3.0f);
+            CHECK(std::sqrt(stop * stop + zGap * zGap) <= envelope - 1.0f + 0.01f);
+            CHECK(stop >= 1.5f - 0.01f);
+        }
 
     std::cout << "combat diagnostics regressions OK" << std::endl;
     return 0;
