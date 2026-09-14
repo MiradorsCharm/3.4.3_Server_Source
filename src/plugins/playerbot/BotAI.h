@@ -25,6 +25,7 @@
 #include "BotLoot.h"
 #include "BotClassAI.h"
 #include "BotHazards.h"
+#include "BotState.h"
 #include "ObjectGuid.h"
 #include "Optional.h"
 
@@ -36,6 +37,14 @@ class Player;
 class WorldPacket;
 class Unit;
 class BotDiagnostics;
+
+/// Where a bot sends its answers ("chat <mode>" command).
+enum class BotChatChannel : uint8
+{
+    Whisper = 0,
+    Party,
+    Say
+};
 
 class BotAI
 {
@@ -68,6 +77,8 @@ public:
     void HandleCommand(std::string const& msg, Player* sender);
     /// best-effort reply to the master
     void WhisperMaster(std::string const& text);
+    /// reply on the channel the bot was told to use ("chat" command)
+    void Reply(Player* to, std::string const& text);
 
     void CommandFollow();
     void CommandStay();
@@ -97,9 +108,47 @@ public:
     void CommandSell();
     void CommandQuests();
 
+    // --- extended order set (adapted from the mangosbot command list) --------
+    /// "follow far|near|melee|ranged" - how far behind the master we walk
+    void CommandFollowMode(std::string const& mode);
+    /// "formation far|near|melee|ranged" - same thing, mangosbot's wording
+    void CommandFormation(std::string const& mode);
+    /// "move out" - break the stack: everyone spreads a few yards apart
+    void CommandMoveOut();
+    /// "flee" - break off the current fight and run
+    void CommandFlee();
+    /// "tank attack my target" - take the sender's target as the tank
+    void CommandTankAttack(Player* sender);
+    /// "position" - report where we are
+    void CommandPosition(Player* to);
+    /// "who" - one line per bot in the group
+    void CommandWho(Player* to);
+    /// "stats" - numbers about this bot
+    void CommandStats(Player* to);
+    /// "spells" - the class abilities we actually know
+    void CommandSpells(Player* to);
+    /// "buy <name>" - purchase from the vendor we are standing at
+    void CommandBuy(std::string const& what);
+    /// "accept" / "accept all" - take the quests the sender is offering
+    void CommandAcceptQuests();
+    /// "cast <name>" - fire a named spell at the sender's target (or self)
+    void CommandCastNamed(std::string const& name, Player* sender);
+    /// "invite" - invite the sender into our group
+    void CommandInvite(Player* sender);
+    /// "emote <name>" - play an emote
+    void CommandEmote(std::string const& name);
+    /// "save mana" / "max dps" - how hard the rotation pushes
+    void CommandSaveMana(bool on);
+    /// "chat say|party|whisper" - where answers go
+    void CommandChat(std::string const& mode);
+    /// "reset ai" - drop every order and start over
+    void CommandResetAI();
+
     // --- victim management (used by combat + retaliate) ----------------------
     void Attack(Unit* target, std::string reason);
     void StopAttacking(std::string reason);
+    /// drop the fight and run away from a unit we cannot hurt
+    void FleeFrom(Unit* attacker, std::string reason);
     /// called by BotCombat when our victim died (queue loot, drop combat)
     void OnVictimDied(Unit* victim);
 
@@ -120,6 +169,22 @@ public:
     bool CanTank() const;
     bool IsGrinding() const { return _grindMode; }
     void SetGrind(bool on) { _grindMode = on; }
+
+    /// "save mana" holds the rotation back while resources are low;
+    /// "max dps" spends freely. Both are orders, both are persisted.
+    bool IsConservingMana() const { return _saveMana; }
+    bool IsMaxDps() const { return _maxDps; }
+
+    /// how far behind the master this bot walks ("follow far/near/...")
+    float GetFollowDistance() const { return _followDistance; }
+    BotChatChannel GetChatChannel() const { return _chatChannel; }
+
+    // --- persistent state (see BotState) ------------------------------------
+    /// take the flags of a restored bot back on (roles, stay point, orders)
+    void ApplySavedState(BotSavedState const& state);
+    /// snapshot the flags worth keeping across a restart
+    BotSavedState BuildState() const;
+    void SaveState();
 
     // --- server -> bot packets (loot responses etc.) --------------------------
     void HandleBotOutgoingPacket(WorldPacket const* packet);
@@ -148,6 +213,8 @@ private:
     /// true when it took control of movement this tick
     bool UpdateHazardAvoidance(uint32 diff);
     void UpdateRetaliate();
+    /// run away from a fight we cannot win; true while it owns the tick
+    bool UpdateFlee(uint32 diff);
     void UpdatePartyCare(uint32 diff);
     void UpdateConsume(uint32 diff);
     void UpdateGrind(uint32 diff);
@@ -167,6 +234,7 @@ private:
     std::unique_ptr<BotHazards> _hazards;
 
     ObjectGuid _masterGuid;
+    ObjectGuid _lastSender;              // whoever gave the last order (answers go there)
     bool _randomBot = false;
     std::string _lastOrder;
 
@@ -177,6 +245,18 @@ private:
     // roles
     bool _tankMode = false;
     bool _grindMode = false;
+
+    // orders with persistent state
+    bool _saveMana = false;
+    bool _maxDps = false;
+    float _followDistance = 0.0f;        // 0 = use AiPlayerbot.FollowDistance
+    BotChatChannel _chatChannel = BotChatChannel::Whisper;
+
+    // running away from a fight we cannot win
+    ObjectGuid _fleeTarget;
+    uint32 _fleeTimer = 0;
+    uint32 _fleeCooldown = 0;
+    uint32 _relocateTimer = 0;           // random bot roaming
 
     // party care / consume / grind throttles
     uint32 _partyCareCooldown = 0;

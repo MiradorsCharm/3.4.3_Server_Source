@@ -31,6 +31,10 @@
 #include "Map.h"
 #include "Log.h"
 
+#include "CreatureData.h"
+
+#include <algorithm>
+#include <cctype>
 #include <ctime>
 #include <unordered_map>
 #include <unordered_set>
@@ -388,6 +392,83 @@ namespace BotInteract
                 reply = "I need to stand next to a vendor or auctioneer";
             return false;
         }
+        return true;
+    }
+
+    bool BuyItemByName(Player* bot, std::string const& wanted, std::string& reply)
+    {
+        if (!bot || !bot->IsAlive() || !bot->IsInWorld())
+        {
+            reply = "I cannot trade right now";
+            return false;
+        }
+        if (wanted.empty())
+        {
+            reply = "buy what? tell me the item name";
+            return false;
+        }
+
+        Creature* vendor = FindNearNpc(bot, UNIT_NPC_FLAG_VENDOR, sBotConfig->SightDistance);
+        Creature* interactable = vendor ? bot->GetNPCIfCanInteractWith(vendor->GetGUID(), UNIT_NPC_FLAG_VENDOR, UNIT_NPC_FLAG_2_NONE) : nullptr;
+        if (!interactable)
+        {
+            reply = vendor ? "walk me closer to the vendor" : "I need to stand next to a vendor";
+            return false;
+        }
+
+        VendorItemData const* stock = sObjectMgr->GetNpcVendorItemList(interactable->GetEntry());
+        if (!stock)
+        {
+            reply = "that vendor has nothing to sell";
+            return false;
+        }
+
+        // case-insensitive substring match over the vendor's own stock, so the
+        // bot can only ever buy what the NPC in front of it actually sells
+        std::string needle = wanted;
+        std::transform(needle.begin(), needle.end(), needle.begin(),
+            [](unsigned char c) { return char(std::tolower(c)); });
+
+        uint32 foundItem = 0;
+        uint32 foundSlot = 0;
+        for (uint32 slot = 0; slot < stock->GetItemCount(); ++slot)
+        {
+            VendorItem const* entry = stock->GetItem(slot);
+            if (!entry || !entry->item)
+                continue;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry->item);
+            if (!proto)
+                continue;
+            std::string name = proto->GetName(LOCALE_enUS) ? proto->GetName(LOCALE_enUS) : "";
+            std::transform(name.begin(), name.end(), name.begin(),
+                [](unsigned char c) { return char(std::tolower(c)); });
+            if (name.find(needle) == std::string::npos)
+                continue;
+            if (bot->CanUseItem(proto, false) != EQUIP_ERR_OK)
+                continue;
+            foundItem = entry->item;
+            foundSlot = slot;
+            break;
+        }
+
+        if (!foundItem)
+        {
+            reply = "no '" + wanted + "' at this vendor";
+            return false;
+        }
+
+        // The core's own buy handler: price, currency, bag space and vendor
+        // stock are all its business, not ours.
+        WorldPackets::Item::BuyItem packet{WorldPacket(CMSG_BUY_ITEM)};
+        packet.VendorGUID = interactable->GetGUID();
+        packet.Item.ItemID = foundItem;
+        packet.Slot = foundSlot;
+        packet.ItemType = ITEM_VENDOR_TYPE_ITEM;
+        packet.Quantity = 1;
+        packet.ContainerGUID.Clear();
+        bot->GetSession()->HandleBuyItemOpcode(packet);
+
+        reply = "bought 1 x " + std::string(sObjectMgr->GetItemTemplate(foundItem)->GetName(LOCALE_enUS));
         return true;
     }
 

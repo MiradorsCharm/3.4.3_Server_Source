@@ -4,7 +4,9 @@
 #include "BotDiagnostics.h"
 #include "BotFactory.h"
 #include "BotInteract.h"
+#include "BotManager.h"
 #include "BotQueues.h"
+#include "BotSpawns.h"
 #include "BotTalents.h"
 #include "Player.h"
 #include "Unit.h"
@@ -23,11 +25,16 @@
 #include "Group.h"
 #include "GroupReference.h"
 #include "WorldSession.h"
+#include "Server/Packets/ChatPackets.h"
 #include "Server/Packets/PartyPackets.h"
 #include "Log.h"
 #include "Util.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <ctime>
 
 BotAI::BotAI(Player* bot) : _bot(bot)
 {
@@ -37,6 +44,7 @@ BotAI::BotAI(Player* bot) : _bot(bot)
     _loot = std::make_unique<BotLoot>(this, bot);
     _hazards = std::make_unique<BotHazards>(this, bot);
     _classAI.reset(CreateBotClassAI(bot->GetClass(), this));
+    _followDistance = sBotConfig->FollowDistance;
 }
 
 BotAI::~BotAI() = default;
@@ -70,6 +78,13 @@ bool BotAI::AcceptsCommandsFrom(Player* sender) const
     // A bot without a bound master accepts its summoner's account.
     if (!master && sender->GetSession()->GetAccountId() == _bot->GetSession()->GetAccountId())
         return true;
+    // Anyone sharing a party/raid with the bot may order it around. This is
+    // what makes the group-chat commands actually work: the master is often
+    // the raid leader, but the person calling "attack my target" is whoever
+    // is looking at the mob.
+    if (Group* group = _bot->GetGroup())
+        if (group->IsMember(sender->GetGUID()))
+            return true;
     return false;
 }
 
@@ -155,10 +170,46 @@ namespace
 
 void BotAI::WhisperMaster(std::string const& text)
 {
-    Player* master = GetMaster();
-    if (!master)
+    // The master normally, but an unbound bot answers whoever ordered it -
+    // otherwise a group-chat command from a raid member went nowhere.
+    Player* who = GetMaster();
+    if (!who)
+        who = ObjectAccessor::FindConnectedPlayer(_lastSender);
+    if (!who)
         return;
-    _bot->Whisper(text, LANG_UNIVERSAL, master);
+    _bot->Whisper(text, LANG_UNIVERSAL, who);
+}
+
+void BotAI::Reply(Player* to, std::string const& text)
+{
+    if (!to)
+        to = GetMaster();
+    if (!to)
+        return;
+
+    switch (_chatChannel)
+    {
+        case BotChatChannel::Say:
+            _bot->Say(text, LANG_UNIVERSAL);
+            return;
+        case BotChatChannel::Party:
+        {
+            // exactly what a player's /p ends in (WorldSession chat handler)
+            Group* group = _bot->GetGroup();
+            if (!group)
+                break;
+            ChatMsg const type = group->IsLeader(_bot->GetGUID()) ? CHAT_MSG_PARTY_LEADER : CHAT_MSG_PARTY;
+            WorldPackets::Chat::Chat packet;
+            packet.Initialize(type, LANG_UNIVERSAL, _bot, nullptr, text);
+            group->BroadcastPacket(packet.Write(), false, group->GetMemberGroup(_bot->GetGUID()));
+            return;
+        }
+        case BotChatChannel::Whisper:
+        default:
+            break;
+    }
+
+    _bot->Whisper(text, LANG_UNIVERSAL, to);
 }
 
 void BotAI::HandleCommand(std::string const& msg, Player* sender)
@@ -166,37 +217,131 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
     if (!AcceptsCommandsFrom(sender))
         return;
 
-    // strip a leading "!" if someone types it out of habit
+    _lastSender = sender->GetGUID();
+
     std::string command = msg;
-    if (!command.empty() && command[0] == '!')
+
+    // trim
+    auto trim = [](std::string& s)
+    {
+        size_t const b = s.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos)
+        {
+            s.clear();
+            return;
+        }
+        size_t const e = s.find_last_not_of(" \t\r\n");
+        s = s.substr(b, e - b + 1);
+    };
+    trim(command);
+
+    // strip a leading "!" if someone types it out of habit
+    if (!command.empty() && (command[0] == '!' || command[0] == '.'))
         command.erase(0, 1);
 
-    auto startsWith = [&command](char const* prefix)
+    // a leading "bot" is how people talk to bots in a group ("bot follow")
+    if (command.rfind("bot ", 0) == 0)
+        command.erase(0, 4);
+
+    // name addressing: "Kaeo attack", "Kaeo, follow". In party chat every bot
+    // hears every line, so the name is how you talk to one of them.
+    auto iequals = [](std::string const& a, std::string const& b)
     {
-        return command.rfind(prefix, 0) == 0;
+        if (a.size() != b.size())
+            return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i])))
+                return false;
+        return true;
     };
 
-    if (startsWith("follow"))
+    if (size_t const comma = command.find(','); comma != std::string::npos)
+    {
+        std::string head = command.substr(0, comma);
+        trim(head);
+        if (iequals(head, _bot->GetName()))
+        {
+            command = command.substr(comma + 1);
+            trim(command);
+        }
+    }
+    else if (command.size() > _bot->GetName().size() + 1
+        && iequals(command.substr(0, _bot->GetName().size()), _bot->GetName())
+        && command[_bot->GetName().size()] == ' ')
+    {
+        command = command.substr(_bot->GetName().size() + 1);
+        trim(command);
+    }
+
+    if (command.empty())
+        return;
+
+    // lowercase copy for matching; the original keeps the case of arguments
+    std::string lower = command;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+        [](unsigned char c) { return char(std::tolower(c)); });
+
+    auto startsWith = [&lower](char const* prefix)
+    {
+        return lower.rfind(prefix, 0) == 0;
+    };
+
+    // the argument of "buy <name>" / "cast <name>" / "emote <name>"
+    auto argAfter = [&command](size_t prefixLength)
+    {
+        std::string rest = command.size() > prefixLength ? command.substr(prefixLength) : std::string();
+        size_t const b = rest.find_first_not_of(" \t");
+        return b == std::string::npos ? std::string() : rest.substr(b);
+    };
+
+    // --- movement / formation ------------------------------------------------
+    if (startsWith("follow "))
+        CommandFollowMode(argAfter(6));
+    else if (startsWith("follow") || startsWith("heel"))
         CommandFollow();
+    else if (startsWith("formation "))
+        CommandFormation(argAfter(9));
+    else if (startsWith("formation"))
+        CommandFormation("");
     else if (startsWith("stay"))
         CommandStay();
     else if (startsWith("come") || startsWith("here"))
         CommandCome(sender);
-    else if (startsWith("attack my target") || startsWith("attack") || startsWith("kill"))
-        CommandAttackMyTarget(sender);
-    else if (startsWith("assist"))
-        CommandAssist(sender);
+    else if (startsWith("move out") || startsWith("spread"))
+        CommandMoveOut();
+    else if (startsWith("summon"))
+        CommandSummon();
+    else if (startsWith("flee") || startsWith("runaway"))
+        CommandFlee();
+
+    // --- combat --------------------------------------------------------------
     else if (startsWith("stop attack") || startsWith("stopattack"))
         CommandStopAttack();
     else if (startsWith("stop grind"))
         CommandGrind(false);
-    else if (startsWith("loot"))
-        CommandLoot();
+    else if (startsWith("tank attack"))
+        CommandTankAttack(sender);
+    else if (startsWith("attack my target") || startsWith("attack") || startsWith("kill"))
+        CommandAttackMyTarget(sender);
+    else if (startsWith("assist"))
+        CommandAssist(sender);
+    else if (startsWith("grind"))
+        CommandGrind(true);
+    else if (startsWith("tank"))
+        CommandTank();
+    else if (startsWith("dps"))
+        CommandDps();
+    else if (startsWith("max dps"))
+        CommandSaveMana(false);
+    else if (startsWith("save mana"))
+        CommandSaveMana(true);
+
+    // --- party services ------------------------------------------------------
     else if (startsWith("heal"))
         CommandHeal();
     else if (startsWith("buff"))
         CommandBuff();
-    else if (startsWith("rez") || startsWith("resurrect") || command == "res")
+    else if (startsWith("rez") || startsWith("resurrect") || startsWith("revive") || lower == "res")
         CommandRez();
     else if (startsWith("cure") || startsWith("dispel"))
         CommandCure();
@@ -204,18 +349,43 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
         CommandDrink();
     else if (startsWith("eat"))
         CommandEat();
-    else if (startsWith("upgrade"))
+
+    // --- loot -----------------------------------------------------------------
+    else if (startsWith("add all loot") || startsWith("loot all") || lower == "ll")
+        CommandLoot();
+    else if (startsWith("loot"))
+        CommandLoot();
+
+    // --- character / items ----------------------------------------------------
+    else if (startsWith("upgrade") || lower == "e")
         CommandUpgrade();
     else if (startsWith("repair"))
         CommandRepair();
-    else if (startsWith("tank"))
-        CommandTank();
-    else if (startsWith("dps"))
-        CommandDps();
-    else if (startsWith("grind"))
-        CommandGrind(true);
-    else if (startsWith("summon"))
-        CommandSummon();
+    else if (startsWith("sell") || lower == "s")
+        CommandSell();
+    else if (startsWith("buy"))
+        CommandBuy(argAfter(3));
+    else if (startsWith("talents"))
+    {
+        uint32 spent = BotTalents::SpendPoints(_bot);
+        Reply(sender, spent ? ("spent " + std::to_string(spent) + " talent point(s)") : "no free talent points");
+    }
+    else if (startsWith("spells"))
+        CommandSpells(sender);
+    else if (startsWith("cast ") || startsWith("spell "))
+        CommandCastNamed(argAfter(lower[0] == 'c' ? 4 : 5), sender);
+    else if (startsWith("emote"))
+        CommandEmote(argAfter(5));
+
+    // --- quests ---------------------------------------------------------------
+    else if (startsWith("quests") || startsWith("quest") || lower == "q")
+        CommandQuests();
+    else if (startsWith("accept"))
+        CommandAcceptQuests();
+
+    // --- group / world ---------------------------------------------------------
+    else if (startsWith("invite"))
+        CommandInvite(sender);
     else if (startsWith("guild leave"))
         CommandGuildLeave();
     else if (startsWith("guild"))
@@ -224,26 +394,36 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
         CommandQueue();
     else if (startsWith("leave"))
         CommandLeave();
-    else if (startsWith("sell"))
-        CommandSell();
-    else if (startsWith("quests") || startsWith("quest"))
-        CommandQuests();
-    else if (startsWith("talents"))
-    {
-        uint32 spent = BotTalents::SpendPoints(_bot);
-        WhisperMaster(spent ? ("spent " + std::to_string(spent) + " talent point(s)") : "no free talent points");
-    }
-    else if (startsWith("status"))
-        CommandStatus(sender);
+
+    // --- reporting -------------------------------------------------------------
+    else if (startsWith("position") || startsWith("where"))
+        CommandPosition(sender);
+    else if (startsWith("who"))
+        CommandWho(sender);
+    else if (startsWith("stats") || startsWith("status"))
+        CommandStats(sender);
+    else if (startsWith("chat"))
+        CommandChat(argAfter(4));
+    else if (startsWith("reset ai") || startsWith("reset"))
+        CommandResetAI();
     else if (startsWith("release"))
     {
         if (_bot->getDeathState() == CORPSE || _bot->getDeathState() == DEAD)
             _deadTimer = sBotConfig->ReviveDelayMs;  // fast-path the self-res
+        Reply(sender, "releasing");
     }
-    else if (startsWith("help"))
-        WhisperMaster("I understand: follow, stay, come, summon, attack my target, assist, stop attack, loot, heal, buff, rez, cure, eat, drink, upgrade, repair, tank, dps, grind, stop grind, queue, leave, guild, sell, quests, talents, status, release");
+    else if (startsWith("help") || lower == "?")
+        Reply(sender,
+            "movement: follow [far|near|melee|ranged], formation, stay, come, move out, summon, flee | "
+            "combat: attack my target, assist, tank attack, stop attack, grind, stop grind, tank, dps, "
+            "max dps, save mana | "
+            "party: heal, buff, rez, cure, eat, drink | "
+            "items: loot, upgrade, repair, sell, buy <name>, talents, spells, cast <name> | "
+            "quests: quests, accept | "
+            "group: invite, leave, guild, queue | "
+            "misc: position, who, stats, chat [say|party|whisper], emote, release, reset ai");
     else
-        WhisperMaster("I don't know that command - whisper 'help' for the list");
+        Reply(sender, "I don't know '" + command + "' - say 'help' for the list");
 }
 
 void BotAI::Attack(Unit* target, std::string reason)
@@ -497,7 +677,426 @@ void BotAI::CommandStatus(Player* to)
     text += _stay ? ", staying" : ", following";
     if (Unit* master = GetMaster())
         text += ", master " + master->GetName();
-    _bot->Whisper(text, LANG_UNIVERSAL, to);
+    Reply(to, text);
+}
+
+// ---------------------------------------------------------------------------
+// extended order set
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // "far|near|melee|ranged" -> a distance in yards. 0 means "whatever the
+    // config says".
+    float FollowDistanceFor(std::string const& mode)
+    {
+        if (mode == "melee")
+            return 2.0f;
+        if (mode == "near")
+            return 4.0f;
+        if (mode == "far")
+            return 12.0f;
+        if (mode == "ranged")
+            return 20.0f;
+        return 0.0f;
+    }
+}
+
+void BotAI::CommandFollowMode(std::string const& mode)
+{
+    float const distance = FollowDistanceFor(mode);
+    if (distance <= 0.0f)
+    {
+        _followDistance = sBotConfig->FollowDistance;
+        CommandFollow();
+        Reply(nullptr, "following at the default distance");
+        return;
+    }
+    _followDistance = distance;
+    CommandFollow();
+    Reply(nullptr, "following at " + std::to_string(uint32(distance)) + " yards");
+}
+
+void BotAI::CommandFormation(std::string const& mode)
+{
+    // mangosbot wording for the same thing: how tightly the group walks
+    CommandFollowMode(mode);
+}
+
+void BotAI::CommandMoveOut()
+{
+    // everyone spreads out around where they stand, on a stable per-bot bearing
+    // so two bots do not pick the same spot
+    float const slot = float(_bot->GetGUID().GetCounter() % 12) * (float(M_PI) / 6.0f);
+    float const distance = 6.0f + float(_bot->GetGUID().GetCounter() % 5) * 2.0f;
+    float const x = _bot->GetPositionX() + std::cos(slot) * distance;
+    float const y = _bot->GetPositionY() + std::sin(slot) * distance;
+    float z = _bot->GetPositionZ();
+    _bot->UpdateGroundPositionZ(x, y, z);
+
+    _stay = true;
+    _stayPoint = Position(x, y, z, slot);
+    _movement->MoveTo(x, y, z, 0.5f);
+    _lastOrder = "move out";
+    Reply(nullptr, "moving out");
+}
+
+void BotAI::CommandFlee()
+{
+    if (Unit* victim = _combat->GetVictim())
+    {
+        FleeFrom(victim, "ordered to flee");
+        Reply(nullptr, "breaking off");
+        return;
+    }
+    Reply(nullptr, "I am not fighting anything");
+}
+
+void BotAI::CommandTankAttack(Player* sender)
+{
+    if (!sender)
+        return;
+
+    bool const canTank = CanTank();
+    if (canTank)
+        _tankMode = true;
+
+    if (Unit* target = sender->GetSelectedUnit())
+        Attack(target, "ordered: tank the sender's target");
+
+    _lastOrder = "tank attack";
+    Reply(sender, canTank ? "tanking your target" : "I am not built to tank - attacking it anyway");
+}
+
+void BotAI::CommandPosition(Player* to)
+{
+    char buffer[160];
+    std::snprintf(buffer, sizeof(buffer), "map %u zone %u at %.1f %.1f %.1f",
+        _bot->GetMapId(), _bot->GetZoneId(),
+        _bot->GetPositionX(), _bot->GetPositionY(), _bot->GetPositionZ());
+    Reply(to, buffer);
+}
+
+void BotAI::CommandWho(Player* to)
+{
+    if (!to)
+        return;
+
+    Group* group = _bot->GetGroup();
+    uint32 listed = 0;
+    for (Player* bot : sBotManager->GetAllBots())
+    {
+        if (bot->GetGroup() != group)
+            continue;
+        if (listed >= 10)
+        {
+            Reply(to, "... and more");
+            return;
+        }
+        BotAI* ai = bot->GetBotAI();
+        std::string activity = "idle";
+        if (ai)
+            if (Unit* victim = ai->GetCombat().GetVictim())
+                activity = "fighting " + victim->GetName();
+        Reply(to, bot->GetName() + " - level " + std::to_string(uint32(bot->GetLevel())) + ", " + activity);
+        ++listed;
+    }
+    if (!listed)
+        Reply(to, "I am the only bot in this group");
+}
+
+void BotAI::CommandStats(Player* to)
+{
+    char buffer[320];
+    std::snprintf(buffer, sizeof(buffer),
+        "%s - level %u class %u, health %u/%u, power %u/%u, %s, %s, %s%s",
+        _bot->GetName().c_str(), uint32(_bot->GetLevel()), uint32(_bot->GetClass()),
+        uint32(_bot->GetHealth()), uint32(_bot->GetMaxHealth()),
+        uint32(_bot->GetPower(_bot->GetPowerType())), uint32(_bot->GetMaxPower(_bot->GetPowerType())),
+        _combat->HasVictim() ? "in combat" : "out of combat",
+        _tankMode ? "tank" : (_grindMode ? "grinding" : "dps"),
+        _saveMana ? "saving mana" : "spending freely",
+        _stay ? ", holding position" : "");
+    Reply(to, buffer);
+}
+
+void BotAI::CommandSpells(Player* to)
+{
+    if (!to)
+        return;
+
+    uint32 count = 0;
+    std::string list;
+    for (auto const& [spellId, playerSpell] : _bot->GetSpellMap())
+    {
+        if (playerSpell.disabled || !playerSpell.active)
+            continue;
+        ++count;
+        if (count <= 12)
+        {
+            if (!list.empty())
+                list += ", ";
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+            char const* name = (info && info->SpellName) ? (*info->SpellName)[LOCALE_enUS] : nullptr;
+            list += (name && *name) ? name : std::to_string(spellId);
+        }
+    }
+
+    Reply(to, std::to_string(count) + " spell(s) known" + (list.empty() ? "" : (": " + list)));
+}
+
+void BotAI::CommandBuy(std::string const& what)
+{
+    std::string reply;
+    BotInteract::BuyItemByName(_bot, what, reply);
+    Reply(nullptr, reply);
+    _lastOrder = "buy " + what;
+}
+
+void BotAI::CommandAcceptQuests()
+{
+    Player* who = ObjectAccessor::FindConnectedPlayer(_lastSender);
+    if (!who)
+        who = GetMaster();
+    uint32 const taken = who ? BotInteract::TakeMastersQuests(_bot, who) : 0;
+    Reply(nullptr, taken ? ("accepted " + std::to_string(taken) + " quest(s)") : "nothing to accept");
+    _lastOrder = "accept";
+}
+
+void BotAI::CommandCastNamed(std::string const& name, Player* sender)
+{
+    if (name.empty())
+    {
+        Reply(sender, "cast what? give me the spell name");
+        return;
+    }
+
+    std::string needle = name;
+    std::transform(needle.begin(), needle.end(), needle.begin(),
+        [](unsigned char c) { return char(std::tolower(c)); });
+
+    uint32 found = 0;
+    for (auto const& [spellId, playerSpell] : _bot->GetSpellMap())
+    {
+        if (playerSpell.disabled)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+        if (!info || !info->SpellName)
+            continue;
+        char const* raw = (*info->SpellName)[LOCALE_enUS];
+        if (!raw || !*raw)
+            continue;
+        std::string spellName = raw;
+        std::transform(spellName.begin(), spellName.end(), spellName.begin(),
+            [](unsigned char c) { return char(std::tolower(c)); });
+        if (spellName.find(needle) != std::string::npos)
+        {
+            found = spellId;
+            break;
+        }
+    }
+
+    if (!found)
+    {
+        Reply(sender, "I do not know a spell called '" + name + "'");
+        return;
+    }
+
+    Unit* target = sender ? sender->GetSelectedUnit() : nullptr;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(found, DIFFICULTY_NONE);
+    if (!target || (info && info->IsPositive()))
+        target = _bot;
+
+    if (_spells->Cast(found, target))
+        Reply(sender, "casting " + std::string((*info->SpellName)[LOCALE_enUS]));
+    else
+        Reply(sender, "I cannot cast that right now");
+}
+
+void BotAI::CommandInvite(Player* sender)
+{
+    if (!sender)
+        return;
+    if (_bot->GetGroup())
+    {
+        Reply(sender, "I am already in a group");
+        return;
+    }
+
+    WorldPackets::Party::PartyInviteClient invite{WorldPacket(CMSG_PARTY_INVITE)};
+    invite.TargetName = sender->GetName();   // the handler resolves by name
+    _bot->GetSession()->HandlePartyInviteOpcode(invite);
+    Reply(sender, "inviting you");
+}
+
+void BotAI::CommandEmote(std::string const& name)
+{
+    if (name.empty())
+    {
+        Reply(nullptr, "emote what?");
+        return;
+    }
+    _bot->TextEmote(name);
+}
+
+void BotAI::CommandSaveMana(bool on)
+{
+    _saveMana = on;
+    _maxDps = !on;
+    Reply(nullptr, on ? "conserving resources" : "going all out");
+    _lastOrder = on ? "save mana" : "max dps";
+}
+
+void BotAI::CommandChat(std::string const& mode)
+{
+    if (mode == "say")
+        _chatChannel = BotChatChannel::Say;
+    else if (mode == "party")
+        _chatChannel = BotChatChannel::Party;
+    else
+        _chatChannel = BotChatChannel::Whisper;
+    Reply(nullptr, "answers go to " + mode);
+}
+
+void BotAI::CommandResetAI()
+{
+    _combat->ClearVictim("reset");
+    _movement->Stop();
+    _stay = false;
+    _stayPoint.reset();
+    _tankMode = false;
+    _saveMana = false;
+    _maxDps = false;
+    _fleeTarget.Clear();
+    _fleeTimer = 0;
+    _followDistance = sBotConfig->FollowDistance;
+    _chatChannel = BotChatChannel::Whisper;
+    _grindMode = _randomBot && sBotConfig->Grind;
+    _lastOrder = "reset";
+    Reply(nullptr, "orders cleared");
+}
+
+// ---------------------------------------------------------------------------
+// running away
+// ---------------------------------------------------------------------------
+
+void BotAI::FleeFrom(Unit* attacker, std::string reason)
+{
+    if (!attacker)
+        return;
+
+    _combat->ClearVictim("fleeing: " + reason);
+    _movement->Stop();
+    _stay = false;
+    _stayPoint.reset();
+    _fleeTarget = attacker->GetGUID();
+    _fleeTimer = 10000;
+    _fleeCooldown = 0;
+    _lastOrder = std::move(reason);
+}
+
+bool BotAI::UpdateFlee(uint32 diff)
+{
+    if (_fleeTimer == 0 || _fleeTarget.IsEmpty())
+        return false;
+
+    if (_fleeTimer > diff)
+        _fleeTimer -= diff;
+    else
+    {
+        _fleeTimer = 0;
+        _fleeTarget.Clear();
+        return false;
+    }
+
+    Unit* threat = ObjectAccessor::GetUnit(*_bot, _fleeTarget);
+    if (!threat || !threat->IsAlive() || !_bot->IsInMap(threat))
+    {
+        _fleeTarget.Clear();
+        _fleeTimer = 0;
+        return false;
+    }
+
+    // already running: let the path play out
+    if (_movement->IsMoving())
+        return true;
+
+    if (_fleeCooldown > diff)
+        _fleeCooldown -= diff;
+    else
+        _fleeCooldown = 0;
+    if (_fleeCooldown != 0)
+        return true;
+
+    float const away = _bot->GetAbsoluteAngle(threat) + float(M_PI);
+    static float const fan[] = { 0.0f, 0.5f, -0.5f, 1.0f, -1.0f, 1.6f, -1.6f };
+    for (float offset : fan)
+    {
+        float const angle = away + offset;
+        float const x = _bot->GetPositionX() + std::cos(angle) * 30.0f;
+        float const y = _bot->GetPositionY() + std::sin(angle) * 30.0f;
+        float z = _bot->GetPositionZ();
+        _bot->UpdateGroundPositionZ(x, y, z);
+        if (std::fabs(z - _bot->GetPositionZ()) > 20.0f)
+            continue;                       // would walk off something
+        if (_hazards->IsSpotDangerous(x, y, z) ||
+            _hazards->IsPathDangerous(_bot->GetPositionX(), _bot->GetPositionY(), x, y))
+            continue;
+
+        _movement->MoveTo(x, y, z, 1.0f, true);
+        _fleeCooldown = 2000;
+        return true;
+    }
+
+    return true;    // boxed in: keep the fight away from the normal brain
+}
+
+// ---------------------------------------------------------------------------
+// persistent state
+// ---------------------------------------------------------------------------
+
+void BotAI::ApplySavedState(BotSavedState const& state)
+{
+    _tankMode = state.tankMode;
+    _grindMode = state.grindMode || (_randomBot && sBotConfig->Grind);
+    _stay = state.stay;
+    if (_stay && (state.stayX != 0.0f || state.stayY != 0.0f))
+        _stayPoint = Position(state.stayX, state.stayY, state.stayZ, 0.0f);
+    _lastOrder = "restored";
+}
+
+BotSavedState BotAI::BuildState() const
+{
+    BotSavedState state = BotState::Load(_bot->GetGUID());
+    state.guid = _bot->GetGUID();
+    state.random = _randomBot;
+    state.tankMode = _tankMode;
+    state.grindMode = _grindMode;
+    state.stay = _stay;
+    if (_stayPoint)
+    {
+        state.stayX = _stayPoint->GetPositionX();
+        state.stayY = _stayPoint->GetPositionY();
+        state.stayZ = _stayPoint->GetPositionZ();
+    }
+    else
+    {
+        state.stayX = state.stayY = state.stayZ = 0.0f;
+    }
+    state.preparedLevel = _bot->GetLevel();
+    state.lastSeen = uint32(time(nullptr));
+    state.present = true;
+    return state;
+}
+
+void BotAI::SaveState()
+{
+    if (!sBotConfig->PersistBots)
+        return;
+    BotSavedState state = BuildState();
+    if (!state.master.IsPlayer())
+        state.master = _masterGuid;
+    BotState::Save(state);
 }
 
 // ---------------------------------------------------------------------------
@@ -754,6 +1353,10 @@ void BotAI::UpdateRetaliate()
     if (_combat->HasVictim())
         return;
 
+    // Running away: do not immediately re-acquire whatever we are running from.
+    if (_fleeTimer > 0)
+        return;
+
     // Duels: fight the opponent until the duel is over
     if (_bot->duel && _bot->duel->Opponent)
     {
@@ -770,6 +1373,17 @@ void BotAI::UpdateRetaliate()
     {
         if (Unit* attacker = _bot->getAttackerForHelper())
         {
+            // Retaliating against something far above our level is what filled
+            // the log with stall reports: the bot stood in range, facing,
+            // attacking - and could not land a single hit. A player runs.
+            if (sBotConfig->HopelessLevelGap > 0 && attacker->ToCreature() && !attacker->ToPlayer()
+                && !attacker->ToPet()
+                && int32(attacker->GetLevel()) - int32(_bot->GetLevel()) > sBotConfig->HopelessLevelGap)
+            {
+                FleeFrom(attacker, "attacker is out of my league");
+                return;
+            }
+
             _combat->SetStance(_classAI->IsMeleeClass() ? BotCombatStance::Melee : BotCombatStance::Ranged);
             _combat->SetVictim(attacker, "retaliate");
         }
@@ -778,7 +1392,10 @@ void BotAI::UpdateRetaliate()
 
 void BotAI::UpdateBrain(uint32 diff)
 {
-    (void)diff;
+    // Running away from a fight we cannot win owns the tick: re-engaging would
+    // just put us back where we started.
+    if (UpdateFlee(diff))
+        return;
 
     UpdateRetaliate();
 
@@ -979,15 +1596,18 @@ void BotAI::UpdateNonCombat(uint32 diff)
             // GUID so it never changes) instead of stacking on one point.
             float const slot = (float(_bot->GetGUID().GetCounter() % 7) - 3.0f) * (float(M_PI) / 8.0f);
 
+            // "follow far|near|melee|ranged" / "formation ..." change this
+            float const followAt = GetFollowDistance();
+
             float dist = _bot->GetExactDist2d(master);
-            if (dist > sBotConfig->FollowDistance + 2.0f)
-                _movement->Follow(master, sBotConfig->FollowDistance, slot);
+            if (dist > followAt + 2.0f)
+                _movement->Follow(master, followAt, slot);
             else
             {
                 _movement->Stop();
                 // face the same way as the master while idle, like real party
                 // members stand
-                if (dist <= sBotConfig->FollowDistance + 1.0f && !_movement->HasLiveGoal())
+                if (dist <= followAt + 1.0f && !_movement->HasLiveGoal())
                     _movement->Face(master);
             }
             return;
@@ -1005,6 +1625,24 @@ void BotAI::UpdateNonCombat(uint32 diff)
 
 void BotAI::UpdateWander(uint32 diff)
 {
+    // Roaming: a bot that has settled in one area moves on to another
+    // level-matching part of the world after the configured time, so the pool
+    // drifts instead of camping one clearing forever.
+    if (sBotConfig->RandomBotRelocateMinutes > 0 && !_combat->HasVictim() && !_bot->IsInCombat())
+    {
+        _relocateTimer += diff;
+        uint32 const relocateMs = sBotConfig->RandomBotRelocateMinutes * 60 * IN_MILLISECONDS;
+        if (_relocateTimer >= relocateMs)
+        {
+            _relocateTimer = 0;
+            if (BotSpawns::PlaceRandomBot(_bot, sBotConfig->WanderRadius * 4.0f))
+            {
+                _movement->Stop();
+                return;
+            }
+        }
+    }
+
     if (_wanderTimer > diff)
     {
         _wanderTimer -= diff;

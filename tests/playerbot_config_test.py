@@ -43,6 +43,31 @@ EXPECTED_KEYS = {
     "AiPlayerbot.RandomBotMaxLevel": lambda v: 1 <= int(v) <= 255,
     "AiPlayerbot.RandomBotUpdateInterval": lambda v: int(v) > 0,
     "AiPlayerbot.RandomBotAccountPrefix": lambda v: v.startswith('"') and v.endswith('"') and len(v) >= 3,
+
+    # behaviour knobs the AI reads but the first version of this gate missed
+    "AiPlayerbot.EatDrinkPct": lambda v: 0 <= int(v) <= 100,
+    "AiPlayerbot.Grind": lambda v: v in ("0", "1"),
+    "AiPlayerbot.AvoidGroundHazards": lambda v: v in ("0", "1"),
+    "AiPlayerbot.HazardSafetyMargin": lambda v: float(v) >= 0,
+    "AiPlayerbot.InterruptCasts": lambda v: v in ("0", "1"),
+
+    # persistence / startup pacing: without these the pool logs in all at once
+    # and every bot comes back as a fresh character in the starting zone
+    "AiPlayerbot.PersistBots": lambda v: v in ("0", "1"),
+    "AiPlayerbot.StateSaveIntervalMs": lambda v: int(v) >= 5000,
+    "AiPlayerbot.RestoreRandomBots": lambda v: v in ("0", "1"),
+    "AiPlayerbot.LoginStaggerMs": lambda v: int(v) >= 0,
+    "AiPlayerbot.MaxConcurrentLogins": lambda v: int(v) >= 1,
+    "AiPlayerbot.StartupLoginDelayMs": lambda v: int(v) >= 0,
+
+    # world-wide placement
+    "AiPlayerbot.RandomBotSpread": lambda v: v in ("0", "1"),
+    "AiPlayerbot.RandomBotRelocateMinutes": lambda v: int(v) >= 0,
+    "AiPlayerbot.RandomBotCreateBatch": lambda v: int(v) >= 1,
+
+    # combat
+    "AiPlayerbot.HopelessLevelGap": lambda v: 0 <= int(v) <= 60,
+    "AiPlayerbot.CastRetryMs": lambda v: 50 <= int(v) <= 2000,
 }
 
 # Keys from the removed port / helper that must not come back silently.

@@ -3,6 +3,8 @@
 #include "Config.h"
 #include "Log.h"
 
+#include <algorithm>
+
 bool BotConfig::Load()
 {
     Enabled = sConfigMgr->GetBoolDefault("AiPlayerbot.Enabled", true);
@@ -60,7 +62,26 @@ bool BotConfig::Load()
     RandomBotAccountPrefix = sConfigMgr->GetStringDefault("AiPlayerbot.RandomBotAccountPrefix", "rndbot");
     BotAccountPrefix = RandomBotAccountPrefix;
 
+    LoginStaggerMs = sConfigMgr->GetIntDefault("AiPlayerbot.LoginStaggerMs", int32(LoginStaggerMs));
+    if (LoginStaggerMs < 0)
+        LoginStaggerMs = 0;
+    MaxConcurrentLogins = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("AiPlayerbot.MaxConcurrentLogins", int32(MaxConcurrentLogins))));
+    StartupLoginDelayMs = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("AiPlayerbot.StartupLoginDelayMs", int32(StartupLoginDelayMs))));
+
+    PersistBots = sConfigMgr->GetBoolDefault("AiPlayerbot.PersistBots", true);
+    StateSaveIntervalMs = uint32(std::max<int32>(5000, sConfigMgr->GetIntDefault("AiPlayerbot.StateSaveIntervalMs", int32(StateSaveIntervalMs))));
+    RestoreRandomBots = sConfigMgr->GetBoolDefault("AiPlayerbot.RestoreRandomBots", true);
+
+    RandomBotSpread = sConfigMgr->GetBoolDefault("AiPlayerbot.RandomBotSpread", true);
+    RandomBotRelocateMinutes = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("AiPlayerbot.RandomBotRelocateMinutes", 0)));
+    RandomBotCreateBatch = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("AiPlayerbot.RandomBotCreateBatch", int32(RandomBotCreateBatch))));
+
+    HopelessLevelGap = std::clamp<int32>(sConfigMgr->GetIntDefault("AiPlayerbot.HopelessLevelGap", HopelessLevelGap), 0, 60);
+    CastRetryMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("AiPlayerbot.CastRetryMs", int32(CastRetryMs)), 50, 2000));
+
     TC_LOG_INFO("playerbot", "Playerbot AI loaded: {} random bot(s) targeted, diagnostics {}, prefix '{}'",
         RandomBotCount, Diagnostics ? "on" : "off", RandomBotAccountPrefix);
+    TC_LOG_INFO("playerbot", "  login pacing: {}ms between logins, {} at a time, {}ms after start; state {}",
+        LoginStaggerMs, MaxConcurrentLogins, StartupLoginDelayMs, PersistBots ? "saved" : "not saved");
     return true;
 }

@@ -41,8 +41,12 @@ public:
     void Shutdown();
 
     // --- bot lifecycle -------------------------------------------------------
-    /// add an existing character as a bot; masterGuid may be empty (random bot)
+    /// add an existing character as a bot; masterGuid may be empty (random bot).
+    /// The login is queued and released at a paced rate.
     bool AddBot(ObjectGuid guid, ObjectGuid masterGuid, bool random);
+    /// same, but jump the login queue (".bot add" and a master's own login -
+    /// a player waiting for their bot should not sit behind the pool)
+    bool AddBotNow(ObjectGuid guid, ObjectGuid masterGuid, bool random);
     /// logout a bot (by character guid or name)
     bool RemoveBot(std::string const& name);
     void RemoveBot(ObjectGuid guid);
@@ -68,10 +72,15 @@ public:
     void ForgetBot(ObjectGuid botGuid);
     /// re-add every persisted bot of this master (called from OnPlayerLogin)
     void LoadBotsForMaster(Player* master);
+    /// write the state (roles, stay point, level, position is the core's own)
+    /// of every online bot; runs periodically and on shutdown
+    void SaveAllStates();
 
     // --- random bot pool ------------------------------------------------------
     void AuditRandomBots();               // keep ~N online
     uint32 GetRandomBotTarget() const;
+    /// bots waiting for a login slot
+    uint32 GetLoginQueueSize() const { return uint32(_loginQueue.size()); }
 
     /// per-world-tick update (called through the Playerbot OnWorldUpdate hook,
     /// world thread)
@@ -80,7 +89,7 @@ public:
 private:
     BotManager() = default;
 
-    void ProcessPendingLogins();
+    void ProcessPendingLogins(uint32 diff);
 
     WorldSession* CreateBotSession(ObjectGuid guid);
     void DestroySession(ObjectGuid guid);
@@ -93,7 +102,21 @@ private:
         ObjectGuid guid;
         ObjectGuid master;
         bool random = false;
+        uint32 ageMs = 0;         // how long this login has been in flight
     };
+
+    /// a bot waiting for a login slot
+    struct QueuedLogin
+    {
+        ObjectGuid guid;
+        ObjectGuid master;
+        bool random = false;
+    };
+
+    /// hand one queued login to a session (called at a paced rate)
+    void StartLogin(QueuedLogin const& entry);
+    /// bring back the bots that were online when the server went down
+    void RestoreRoster();
 
     /// queued chat command (routed on the world thread)
     struct QueuedChat
@@ -110,6 +133,15 @@ private:
     std::unordered_map<ObjectGuid, std::unique_ptr<WorldSession>> _sessions;
     std::unordered_map<ObjectGuid, PendingLogin> _pending;
     std::vector<ObjectGuid> _logoutQueue;
+
+    // login pacing: a bot login loads a whole character, so releasing hundreds
+    // of them in one tick is what used to freeze the world after every start
+    std::deque<QueuedLogin> _loginQueue;
+    uint32 _loginGateMs = 0;          // time until the next login may start
+    uint32 _startupDelayMs = 0;       // grace period after boot
+    bool _rosterRestored = false;
+
+    uint32 _stateSaveTimer = 0;
 
     std::mutex _chatMutex;
     std::deque<QueuedChat> _chatQueue;

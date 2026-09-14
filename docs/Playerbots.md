@@ -64,6 +64,8 @@ not appear in the bot code.
 | `BotLoot.{h,cpp}` | corpse queue -> SendLoot/StoreLootItem |
 | `BotDiagnostics.{h,cpp}` | the "Bot X is stuck" watchdog |
 | `BotFactory.{h,cpp}` | character prep (spells/gear/ammo) and fresh random bot characters |
+| `BotState.{h,cpp}` | the `characters_playerbot` table: roster, owner, orders, `prepared_level` |
+| `BotSpawns.{h,cpp}` | world-wide placement derived from the `creature` spawn table |
 | `BotCommands.cpp` | `.bot` console/GM commands |
 | `BotHooks.cpp` | `Playerbot::InitializePlayerbots` and friends for `worldserver/Main.cpp` |
 | `src/server/game/AI/Playerbot/PlayerbotHooks.{h,cpp}` | the core-side hook registry (function pointers, null-safe inline wrappers) |
@@ -113,10 +115,21 @@ characters are generated. Fill it with operator-chosen names:
 INSERT INTO ai_playerbot_names (name) VALUES ('Nameone'), ('Nametwo');
 ```
 
+It also creates `characters_playerbot`, the bot state table. One row per bot:
+who owns it, whether it is part of the random pool, the roles/orders it had
+been given (`tank_mode`, `grind_mode`, `stay` + the stay point), the level it
+was last prepared for, and when it was last seen. This is what makes a
+restart restore the same roster at the same places with the same orders - the
+position itself is the core's own `characters.position_*` and comes back
+because the character is saved. Upgrading from the previous build (whose
+table carried only `guid`, `master`) needs nothing: the columns are added in
+place on startup by `BotState::EnsureSchema`, and the script does the same
+migration if you prefer to run it by hand.
+
 Random bots are **every character whose account name starts with
-`AiPlayerbot.RandomBotAccountPrefix`** (default `rndbot`). No per-bot
-bookkeeping tables exist; to demote a bot, rename its account or delete the
-character. Old tables from the previous port
+`AiPlayerbot.RandomBotAccountPrefix`** (default `rndbot`). To demote a bot,
+rename its account or delete the character (its `characters_playerbot` row is
+dropped automatically). Old tables from the previous port
 (`ai_playerbot_random_bots`, `ai_playerbot_custom_strategy`,
 `ai_playerbot_tellitem`, `ai_playerbot_guild_tasks`,
 `ai_playerbot_texts`) are no longer read and can be dropped.
@@ -132,6 +145,8 @@ Key settings:
 ```ini
 AiPlayerbot.Enabled = 1            # master switch
 AiPlayerbot.RandomBotCount = 0     # how many random bots to keep online (0 = off)
+AiPlayerbot.RandomBotMinLevel = 1  # level band the pool is kept in
+AiPlayerbot.RandomBotMaxLevel = 60
 AiPlayerbot.Diagnostics = 1        # stuck-bot reports
 AiPlayerbot.MeleeStopFactor = 0.8  # stop at 80% of the live swing range
 AiPlayerbot.CastStandDistance = 18 # ranged stand-off
@@ -141,6 +156,37 @@ AiPlayerbot.FollowDistance = 4
 Distances: `SightDistance`, `SpellDistance`, `LootDistance`, `WanderRadius`,
 `CastMinDistance`. Timers: `StallReportMs`, `StallReportCooldownMs`,
 `ReviveDelayMs`, `RandomBotUpdateInterval`.
+
+**Persistence and startup pacing** - the knobs that decide what a restart
+does. Defaults are tuned for a 500-bot pool on a modest machine:
+
+```ini
+AiPlayerbot.PersistBots = 1        # save/restore the roster (0 = clean slate)
+AiPlayerbot.StateSaveIntervalMs = 60000
+AiPlayerbot.RestoreRandomBots = 1  # bring the saved pool back on start
+AiPlayerbot.StartupLoginDelayMs = 15000  # grace period after boot
+AiPlayerbot.LoginStaggerMs = 400   # minimum pause between two bot logins
+AiPlayerbot.MaxConcurrentLogins = 3
+```
+
+At the defaults a 500-bot pool takes about **3.5 minutes** to come back after
+a restart, three logins at a time, instead of all at once in a single tick.
+Lower `LoginStaggerMs` / raise `MaxConcurrentLogins` on a machine with room.
+
+**World-wide placement:**
+
+```ini
+AiPlayerbot.RandomBotSpread = 1        # place by level + occupancy, not starter zone
+AiPlayerbot.RandomBotRelocateMinutes = 0   # >0: settled bots wander on
+AiPlayerbot.RandomBotCreateBatch = 5   # new characters created per audit
+```
+
+**Combat:**
+
+```ini
+AiPlayerbot.CastRetryMs = 150     # rotation re-evaluation period (was 600)
+AiPlayerbot.HopelessLevelGap = 5  # run instead of flailing at a +5 mob (0 = off)
+```
 
 ## 6. Using bots
 
@@ -160,43 +206,89 @@ Distances: `SightDistance`, `SpellDistance`, `LootDistance`, `WanderRadius`,
   non-elite mobs**, loot their kills, eat and drink after fights, and level
   from the XP like any player.
 
-### Whisper commands
+### Commands
 
-Whisper the bot (or use party/raid chat if you are its master):
+Say them in **whisper, party or raid chat**, or in `/say` while standing next
+to the bot. Anyone sharing a party or raid with the bot may command it (the
+master always may, GMs always may) - a bot you are grouped with answers you,
+which is what makes leading a raid of bots possible. Prefixes are optional: a
+leading `!`, `.`, or `bot ` is stripped, and you can address one bot by name
+(`Kaeo, follow`). Matching is case-insensitive prefix matching, so `att` and
+`ATTACK` both work.
+
+**Movement and formation**
 
 | Command | Effect |
 | --- | --- |
 | `follow` | follow the master |
+| `follow melee` / `near` / `far` / `ranged` | follow at 2 / 4 / 12 / 20 yards |
+| `formation <yards>` | follow at an explicit distance |
+| `heel` | back to the configured `FollowDistance` |
 | `stay` | hold position |
-| `come` | walk to the sender |
+| `come` / `here` | walk to the sender |
+| `move out` / `spread` | take distance from the group |
 | `summon` | teleport to the master now |
-| `attack my target` / `attack` | attack the sender's selection |
+| `flee` / `runaway` | run away from the current fight |
+| `position` / `where` | report map and coordinates |
+
+**Combat**
+
+| Command | Effect |
+| --- | --- |
+| `attack my target` / `attack` / `kill` | attack the sender's selection |
 | `assist` | attack the sender's victim |
+| `tank attack` | tank-mode attack on the sender's target |
 | `stop attack` | disengage |
-| `loot` | loot our kills |
-| `heal` | run a heal pass (party, not just self) |
-| `buff` | cast class buffs on the party now |
-| `rez` | resurrect a dead party member (healers) |
-| `cure` / `dispel` | cure/dispel the party |
-| `eat` / `drink` | consume food/water from bags now |
-| `upgrade` | equip the best item-level gear from the bot's bags |
-| `repair` | repair the bot's gear |
+| `grind` / `stop grind` | attack nearby mobs while idle |
 | `tank` | tank role: taunt/presence upkeep (tank-capable classes) |
 | `dps` | back to damage role |
-| `grind` / `stop grind` | attack nearby mobs while idle |
+| `max dps` | never hold the rotation back |
+| `save mana` | hold casts while mana is low |
+| `cast <name>` / `spell <name>` | cast a specific spell by name |
+| `spells` | list what the bot knows |
+
+**Party care**
+
+| Command | Effect |
+| --- | --- |
+| `heal` | run a heal pass (party, not just self) |
+| `buff` | cast class buffs on the party now |
+| `rez` / `revive` / `res` | resurrect a dead party member (healers) |
+| `cure` / `dispel` | cure/dispel the party |
+| `eat` / `drink` | consume food/water from bags now |
+| `release` | speed up self-resurrection |
+
+**Items, vendors and money**
+
+| Command | Effect |
+| --- | --- |
+| `loot` | loot our kills |
+| `add all loot` / `loot all` / `ll` | loot everything on the corpse |
+| `upgrade` / `e` | equip the best item-level gear from the bot's bags |
+| `repair` | repair the bot's gear |
+| `sell` / `s` | vendor junk / post equipment at the auction house |
+| `buy <name>` | buy an item from the vendor we are standing at |
+| `talents` | spend free talent points now |
+
+**Social and misc**
+
+| Command | Effect |
+| --- | --- |
+| `quests` / `quest` / `q` | quest status |
+| `accept` | accept the offered quest |
+| `invite` | invite the sender to a group |
+| `guild` / `guild leave` | join / leave the master's guild |
 | `queue` | queue at a nearby battlemaster (auto-enters, fights, `leave` exits) |
 | `leave` | leave battleground / queues |
-| `guild` | join the master's guild |
-| `guild leave` | leave the guild |
-| `sell` | vendor junk / post equipment at the auction house |
-| `talents` | spend free talent points now |
-| `quests` | take the master's shareable quests |
-| `status` | one-line self report |
-| `release` | speed up self-resurrection |
-| `help` | the list |
+| `emote <text>` | play the emote |
+| `who` | the bots online |
+| `stats` / `status` | one-line self report |
+| `chat` / `chat say` / `chat party` / `chat whisper` | which channel to answer on |
+| `reset ai` / `reset` | drop victim, orders and state |
+| `help` / `?` | the list |
 
-Without a bound master, a bot accepts commands from anyone on its own
-account; GMs can always command.
+An unrecognised command answers `I don't know '<x>' - say 'help'` instead of
+being silently ignored.
 
 ### What bots do on their own
 
@@ -381,6 +473,131 @@ circle (`BotHazard{center, radius, source, spellId}`):
 `AiPlayerbot.AvoidGroundHazards`, `AiPlayerbot.HazardSafetyMargin` (yards,
 0..15), `AiPlayerbot.InterruptCasts`.
 
+## 12. Restarts, world spread, ranged attacks and group chat (2026-09-14)
+
+Four complaints, one root cause and three independent ones.
+
+### 12.1 The real reason most bots were useless
+
+`BotFactory::PrepareBot` only levelled a bot when
+`isRandomBot && GetLevel() < RandomBotMinLevel`, and `RandomBotMinLevel`
+defaults to **1**. A 500-bot pool therefore came up as 500 level-1 characters:
+no spells beyond the starting handful, no usable gear, standing in the
+starting zones, and - the part that produced the stall reports - unable to
+damage anything above level ~6. `Bot Perena stalled 4s ... atk=1
+swingErr=none` is exactly that: the bot *was* in range, *was* facing, *did*
+land swings, and every swing did nothing.
+
+`PrepareBot` now levels into the configured `RandomBotMinLevel` ..
+`RandomBotMaxLevel` band, learns the class spell list for that level, and
+re-prepares when the band moves. It skips the whole pass when
+`BotState.prepared_level` already matches (so a restart costs nothing).
+`LearnClassSpells` also pre-validates every spell, which is 12.5.
+
+### 12.2 Bots survive a restart, and the restart no longer freezes the world
+
+**State.** New module `BotState.{h,cpp}`, one row per bot in
+`characters_playerbot`: owner, random-pool flag, `tank_mode`, `grind_mode`,
+`stay` + the stay point, `prepared_level`, `last_seen`. A bot's *position*
+needs no new table - it is the core's own `characters.position_*`, and the bot
+session now calls `Player::SaveToDB()` on logout, so it is actually written.
+`BotAI::SaveState` / `ApplySavedState` convert to and from that row; the
+manager saves periodically (`StateSaveIntervalMs`) and again in `Shutdown`.
+
+**Pacing.** `AddBot` no longer logs a bot in - it queues it. `BotManager::Update`
+releases the queue at `MaxConcurrentLogins` in flight, one every
+`LoginStaggerMs`, and not at all until `StartupLoginDelayMs` has passed. The
+pool audit counts queued logins toward its target so it does not re-queue the
+whole gap every 30 s. `RestoreRoster()` re-adds the saved roster on the same
+paced queue; a bot whose master is offline waits for that master's login
+instead of appearing on its own. `LoadBotsForMaster` uses the new
+`AddBotNow` so a player's own bots are not made to sit behind the pool.
+
+500 bots ≈ 3.5 minutes to come back, three at a time, instead of one
+database-thrash tick.
+
+### 12.3 500 bots no longer pile into Goldshire
+
+New module `BotSpawns.{h,cpp}`. `BuildSpots()` walks the core's own
+`sObjectMgr->GetAllCreatureData()` (capped at 30 000 spawns) and keeps a spawn
+only if: the map exists and is not instanceable, phase 0/1, the template and
+its `DIFFICULTY_NONE` difficulty exist, classification is `Normal`, not a
+civilian, not a critter or non-combat pet, and no service NPC flag. Each
+surviving spawn is bucketed by `diff->MinLevel`/`MaxLevel` into
+`_byLevel[1..128]`.
+
+`PickSpot` widens the level window by ±5, samples 192 candidates, and scores
+each by how many other bots already stand in its 200-yard cell
+(`mapId<<42 | cx<<21 | cy`), with a random tie-break. `PlaceRandomBot` jitters
+the point ±4 yd, teleports and records the occupancy. It is called when a
+random bot logs in (250 yd exclusion), and again - optionally - from
+`UpdateWander` after `RandomBotRelocateMinutes` so a settled bot drifts on.
+
+Nothing is hardcoded: there is not one coordinate in the plugin.
+
+### 12.4 Ranged bots never cast
+
+The ranged attack spell is a property of the **equipped ranged weapon**, not
+of the class - the core's own `PlayerAI::DoRangedAttackIfReady` switches on
+`rangedTemplate->GetSubClass()`: bow/gun/crossbow → `SPELL_SHOOT` 3018,
+thrown → 2764, wand → 5019; a hunter's Auto Shot is 75. And those spells are
+**not in the spell book**, which is why the core casts them triggered.
+
+New `BotSpells::RangedAttackSpell()` implements that table (75 when the bot
+knows Auto Shot, else 3018), and `StartAutoRepeat` casts with
+`triggered = !known`. `Spell::GetCurrentContainer()` returns
+`CURRENT_AUTOREPEAT_SPELL` purely from `IsAutoRepeat()`
+(`SPELL_ATTR2_AUTO_REPEAT`), so a triggered cast still installs the loop.
+`Unit::_UpdateAutoRepeatSpell` cancels the wand loop on movement, so
+`BotCombat::UpdateRanged` now calls `MaintainAutoRepeat(victim)` every tick in
+band and restarts the loop when its `m_targets.GetUnitTarget()` is not the
+victim. The dead `CastMinDistance` config now feeds `minRange`, and the
+rotation re-evaluation period dropped from a hardcoded 600 ms to
+`CastRetryMs` (150).
+
+### 12.5 `AddSpell: Spell (ID: 51266) is invalid`
+
+`LearnClassSpells` handed `Player::LearnSpell` every id from the class spell
+list, including ones this build's DBC does not carry or that the character
+cannot hold. The log line comes from `Player::AddSpell`. Spells are now
+pre-filtered with `SpellMgr::IsSpellValid(info, bot, false)` - the very
+predicate `AddSpell` applies - and any spell whose effects are all
+`SPELL_EFFECT_NONE` is rejected. Note `SpellInfo` in 3.4.3 has **no class or
+race mask**, so class filtering is not possible here.
+
+### 12.6 `MoveSplineInitArgs::Validate: expression '_checkPathLengths()' failed`
+
+`_checkPathLengths` (`MoveSpline.cpp:271`) rejects a spline when any two
+consecutive **middle** points (`path.size() > 2`, `i >= 1`) are closer than
+0.1 yard. A failed `Validate` makes `Launch` return 0, so the bot never moves
+at all. Fixed at the path source: `MoveSplineInit::MoveTo` runs
+`PruneDegeneratePathPoints` (threshold `MIN_SPLINE_SEGMENT_LENGTH = 0.1f`)
+before `MovebyPath`.
+
+### 12.7 Hopeless fights
+
+A bot in combat with a creature `HopelessLevelGap` levels above it now runs
+instead of flailing: `UpdateRetaliate` calls `FleeFrom(attacker, ...)` and
+`BotCombat` bails the same way. `UpdateFlee` owns the tick for a 10 s window
+(30 yd legs, fan offsets `{0, ±0.5, ±1.0, ±1.6}` rad, rejects |Δz| > 20 and
+hazards), and `UpdateRetaliate` returns early while `_fleeTimer > 0` so the
+bot does not instantly re-acquire what it is running from.
+
+### 12.8 Commands in group chat, mangosbot vocabulary
+
+`AcceptsCommandsFrom` now also accepts **any member of the bot's party/raid**
+(mirroring `ike3/mangosbot`'s `PlayerbotSecurity.cpp`), and
+`BotManager::RouteChat` routes party/raid/say to those bots rather than only
+to the master's own. `HandleCommand` was rewritten around the mangosbot
+creator map (see section 6 for the full vocabulary), with optional `!` / `.` /
+`bot ` prefixes and `<Name>, ` addressing. New `BotAI::Reply` answers on the
+channel the `chat` command selected: `/say`, party (`Group::BroadcastPacket`
+with `CHAT_MSG_PARTY_LEADER` when leading, exactly the pattern from
+`ChatHandler.cpp`), or whisper. `BuyItemByName` walks
+`sObjectMgr->GetNpcVendorItemList`, matches `ItemTemplate::GetName`
+case-insensitively, checks `CanUseItem`, and buys through the real
+`HandleBuyItemOpcode`.
+
 ### Still open / worth verifying next
 
 * **mmaps required for good pathing.** The mover uses `PathGenerator`
@@ -391,6 +608,18 @@ circle (`BotHazard{center, radius, source, spellId}`):
   vendor-grade item per slot); it is not a full talent/enchant/gem build.
 * **Group formation is cosmetic**, not role-aware (no tank-in-front melee
   positioning yet).
-* These fixes were made by static review against the 3.4.3 core APIs; they
-  have **not been compiled** in this environment. Do a normal MSVC build
-  before deploying.
+* **`BuyItemByName` needs a vendor within interact range.** There is no
+  "walk to the nearest vendor first" step yet.
+
+### Verification status
+
+Every plugin source and `MoveSplineInit.cpp` compiles clean with
+`g++ -std=c++20 -fsyntax-only` against the real 3.4.3 headers (game files with
+`PrecompiledHeaders/gamePCH.h` force-included, exactly as CMake does). That
+checks syntax, name lookup and types - it is **not** a link or a runtime test,
+and this environment cannot run the server. Both Python suites pass:
+`tests/playerbot_config_test.py` 5/5 (all 36 `AiPlayerbot.*` keys the loader
+reads are present, documented exactly once) and
+`tests/playerbot_wiring_test.py` 52/52 (16 new invariants pinning restart
+pacing, persistence, world spread, ranged casting, the hopeless-fight bail,
+group-chat routing and the spline prune).

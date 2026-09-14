@@ -253,6 +253,50 @@ namespace Movement
         std::transform(controls.begin(), controls.end(), std::back_inserter(args.path), TransportPathTransform(unit, args.TransformForTransport));
     }
 
+    namespace
+    {
+        // MoveSplineInitArgs::_checkPathLengths() rejects a spline as soon as
+        // two consecutive path points are closer than this, and the rejection
+        // is a hard one: Validate() fails, Launch() returns 0, the movement is
+        // never started and "MoveSplineInitArgs::Validate: expression
+        // '_checkPathLengths()' failed for <unit>" is logged. PathGenerator
+        // produces such points all the time - the start of a path sits on a
+        // navmesh tile edge, or a short chase yields two corners a few
+        // centimetres apart - so creatures (and pets) standing near a target
+        // could silently stop moving while the log filled up.
+        //
+        // A segment shorter than this carries no information the client could
+        // resolve, so dropping the redundant point keeps the movement instead
+        // of discarding it.
+        constexpr float MIN_SPLINE_SEGMENT_LENGTH = 0.1f;
+
+        void PruneDegeneratePathPoints(PointsArray& path)
+        {
+            if (path.size() <= 2)
+                return;
+
+            PointsArray pruned;
+            pruned.reserve(path.size());
+            pruned.push_back(path.front());
+
+            // every kept point stays at least MIN_SPLINE_SEGMENT_LENGTH away
+            // from the point before it, which is exactly what the validator
+            // requires of the segments between the middle points
+            for (size_t i = 1; i + 1 < path.size(); ++i)
+                if ((path[i] - pruned.back()).length() >= MIN_SPLINE_SEGMENT_LENGTH)
+                    pruned.push_back(path[i]);
+
+            // the destination is authoritative: give up trailing middle points
+            // that crowd it rather than shortening the movement
+            while (pruned.size() > 1 && (path.back() - pruned.back()).length() < MIN_SPLINE_SEGMENT_LENGTH)
+                pruned.pop_back();
+            pruned.push_back(path.back());
+
+            if (pruned.size() != path.size())
+                path = std::move(pruned);
+        }
+    }
+
     void MoveSplineInit::MoveTo(float x, float y, float z, bool generatePath, bool forceDestination)
     {
         MoveTo(G3D::Vector3(x, y, z), generatePath, forceDestination);
@@ -266,7 +310,9 @@ namespace Movement
             bool result = path.CalculatePath(dest.x, dest.y, dest.z, forceDestination);
             if (result && !(path.GetPathType() & PATHFIND_NOPATH))
             {
-                MovebyPath(path.GetPath());
+                PointsArray generatedPath = path.GetPath();
+                PruneDegeneratePathPoints(generatedPath);
+                MovebyPath(generatedPath);
                 return;
             }
         }
