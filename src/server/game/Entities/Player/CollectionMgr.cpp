@@ -100,8 +100,22 @@ void CollectionMgr::LoadToys()
         _owner->GetPlayer()->AddToy(t.first, t.second.AsUnderlyingType());
 }
 
+bool CollectionMgr::HasAccountStorage() const
+{
+    // Battle.net account id 0 means "not a real battle.net account" (0 is not
+    // a valid row in `battlenet_accounts`). Playerbot sessions are created that
+    // way on purpose, so answer "false" rather than querying a nonexistent
+    // account and letting MySQL reject every row we try to write.
+    return _owner && _owner->GetBattlenetAccountId() != 0;
+}
+
 bool CollectionMgr::AddToy(uint32 itemId, bool isFavourite, bool hasFanfare)
 {
+    // No battle.net account (playerbot sessions): there is no account-wide
+    // collection to add this toy to, so do not track it at all.
+    if (!HasAccountStorage())
+        return false;
+
     if (UpdateAccountToys(itemId, isFavourite, hasFanfare))
     {
         _owner->GetPlayer()->AddToy(itemId, GetToyFlags(isFavourite, hasFanfare).AsUnderlyingType());
@@ -126,6 +140,12 @@ void CollectionMgr::LoadAccountToys(PreparedQueryResult result)
 
 void CollectionMgr::SaveAccountToys(LoginDatabaseTransaction trans)
 {
+    // Never write account-wide rows for a session without a battle.net account
+    // (id 0 is not a row in `battlenet_accounts`; `battlenet_item_appearances`
+    // even carries a foreign key that rejects it).
+    if (!HasAccountStorage())
+        return;
+
     LoginDatabasePreparedStatement* stmt = nullptr;
     for (auto const& toy : _toys)
     {
@@ -166,7 +186,11 @@ void CollectionMgr::ToyClearFanfare(uint32 itemId)
 
 void CollectionMgr::OnItemAdded(Item* item)
 {
-    if (sDB2Manager.GetHeirloomByItemId(item->GetEntry()))
+    // Heirloom items are an account-wide collection: a session without
+    // account storage (playerbot) must not register one, so bots never end up
+    // with heirlooms. The item itself stays in the bot's bags/equipment - only
+    // the account-wide bookkeeping is skipped.
+    if (HasAccountStorage() && sDB2Manager.GetHeirloomByItemId(item->GetEntry()))
         AddHeirloom(item->GetEntry(), 0);
 
     AddItemAppearance(item);
@@ -204,6 +228,9 @@ void CollectionMgr::LoadAccountHeirlooms(PreparedQueryResult result)
 
 void CollectionMgr::SaveAccountHeirlooms(LoginDatabaseTransaction trans)
 {
+    if (!HasAccountStorage())
+        return;
+
     LoginDatabasePreparedStatement* stmt = nullptr;
     for (auto const& heirloom : _heirlooms)
     {
@@ -237,6 +264,9 @@ void CollectionMgr::LoadHeirlooms()
 
 void CollectionMgr::AddHeirloom(uint32 itemId, uint32 flags)
 {
+    if (!HasAccountStorage())
+        return;
+
     if (UpdateAccountHeirlooms(itemId, flags))
         _owner->GetPlayer()->AddHeirloom(itemId, flags);
 }
@@ -348,6 +378,9 @@ void CollectionMgr::LoadAccountMounts(PreparedQueryResult result)
 
 void CollectionMgr::SaveAccountMounts(LoginDatabaseTransaction trans)
 {
+    if (!HasAccountStorage())
+        return;
+
     for (auto const& mount : _mounts)
     {
         LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_REP_ACCOUNT_MOUNTS);
@@ -372,7 +405,11 @@ bool CollectionMgr::AddMount(uint32 spellId, MountStatusFlags flags, bool factio
     if (itr != FactionSpecificMounts.end() && !factionMount)
         AddMount(itr->second, flags, true, learned);
 
-    _mounts.insert(MountContainer::value_type(spellId, flags));
+    // The mount collection is account-wide; a session without a battle.net
+    // account (playerbot) has nowhere to store it. The bot still learns the
+    // riding spell below - only the collection bookkeeping is skipped.
+    if (HasAccountStorage())
+        _mounts.insert(MountContainer::value_type(spellId, flags));
 
     // Mount condition only applies to using it, should still learn it.
     if (mount->PlayerConditionID)
@@ -484,6 +521,16 @@ void CollectionMgr::LoadAccountItemAppearances(PreparedQueryResult knownAppearan
 
 void CollectionMgr::SaveAccountItemAppearances(LoginDatabaseTransaction trans)
 {
+    // This is the statement that produced the errno 1452 flood:
+    // `battlenet_item_appearances.battlenetAccountId` has a foreign key to
+    // `battlenet_accounts.id`, and a playerbot session logs in with
+    // battle.net account id 0 (PlayerbotHolder::AddPlayerBot). Every save then
+    // appended one INSERT per non-empty appearance block for account 0 - tens
+    // of thousands of failed statements and log lines per bot save. A session
+    // without account storage has no appearance collection at all.
+    if (!HasAccountStorage())
+        return;
+
     uint16 blockIndex = 0;
     boost::to_block_range(*_appearances, DynamicBitsetBlockOutputIterator([this, &blockIndex, trans](uint32 blockValue)
     {
@@ -671,6 +718,15 @@ bool CollectionMgr::CanAddAppearance(ItemModifiedAppearanceEntry const* itemModi
 
 void CollectionMgr::AddItemAppearance(ItemModifiedAppearanceEntry const* itemModifiedAppearance)
 {
+    // A session without a battle.net account (playerbot) has no transmog
+    // collection: tracking appearances would grow the (unsaveable) bitset and
+    // the player's Transmog update field for every soulbound item the bot
+    // touches, for a client that does not exist. This is also the gate that
+    // keeps SaveAccountItemAppearances() from ever having anything to write
+    // for such a session.
+    if (!HasAccountStorage())
+        return;
+
     Player* owner = _owner->GetPlayer();
     if (_appearances->size() <= itemModifiedAppearance->ID)
     {

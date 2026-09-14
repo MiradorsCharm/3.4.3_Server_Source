@@ -237,8 +237,30 @@ BattlePetMgr::BattlePetMgr(WorldSession* owner)
     }
 }
 
+bool BattlePetMgr::CanStoreBattlePets() const
+{
+    // Battle.net account id 0 is not a row in `battlenet_accounts`, so there is
+    // nothing to attach a pet journal to; a bot session must not have one at
+    // all (its owner asked for bots without pets, and every pet a bot collected
+    // would be written to the auth database under account 0).
+    return _owner && !_owner->IsBotSession() && _owner->GetBattlenetAccountId() != 0;
+}
+
+bool BattlePetMgr::IsBattlePetSystemEnabled()
+{
+    // Login uses this to decide whether to teach the bot SPELL_BATTLE_PET_TRAINING
+    // (which is what auto-grants battle pets through Player::LearnSpell), and the
+    // journal packet uses it to decide whether there is anything to show.
+    return CanStoreBattlePets() && GetSlot(BattlePetSlot::Slot0)->Locked != true;
+}
+
 void BattlePetMgr::LoadFromDB(PreparedQueryResult pets, PreparedQueryResult slots)
 {
+    // A session without a battle.net account has no pet journal to load; the
+    // login query for account 0 returns nothing anyway.
+    if (!CanStoreBattlePets())
+        return;
+
     if (pets)
     {
         do
@@ -331,6 +353,11 @@ void BattlePetMgr::LoadFromDB(PreparedQueryResult pets, PreparedQueryResult slot
 
 void BattlePetMgr::SaveToDB(LoginDatabaseTransaction trans)
 {
+    // Bots have no battle.net account: nothing to write, and writing anyway
+    // means rows keyed by account 0 in the auth database on every bot save.
+    if (!CanStoreBattlePets())
+        return;
+
     LoginDatabasePreparedStatement* stmt = nullptr;
 
     for (auto itr = _pets.begin(); itr != _pets.end();)
@@ -451,6 +478,12 @@ BattlePet* BattlePetMgr::GetPet(ObjectGuid guid)
 
 void BattlePetMgr::AddPet(uint32 species, uint32 display, uint16 breed, BattlePetBreedQuality quality, uint32 spellId, uint16 level /*= 1*/)
 {
+    // Bots cannot own battle pets: there is no battle.net account to keep the
+    // journal in, and a granted pet would be written to the auth database
+    // under account 0 on the next save.
+    if (!CanStoreBattlePets())
+        return;
+
     BattlePetSpeciesEntry const* battlePetSpecies = sBattlePetSpeciesStore.LookupEntry(species);
     if (!battlePetSpecies) // should never happen
         return;
