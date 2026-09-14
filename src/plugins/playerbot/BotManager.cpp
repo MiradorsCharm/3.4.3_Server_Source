@@ -323,12 +323,38 @@ void BotManager::EnsureRandomBotPool()
     uint32 const classCount = 9; // warrior..druid (DKs are excluded from random pools)
     time_t const now = time(nullptr);
 
+    // Account names are capped at MAX_ACCOUNT_STR (16) chars by
+    // AccountMgr::CreateAccount. The old scheme "<prefix>_<unix-time>" produced
+    // "rndbot_1789402675" = 17 chars, so every create failed with
+    // AOR_NAME_TOO_LONG ("Could not create bot account ..."). Build the suffix
+    // from a base-36 counter and trim the prefix so the whole name fits, and
+    // skip names that already exist instead of treating that as a hard error.
+    auto toBase36 = [](uint64 value)
+    {
+        static char const digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+        std::string out;
+        do { out.insert(out.begin(), digits[value % 36]); value /= 36; } while (value);
+        return out;
+    };
+
     for (uint32 i = 0; i < need; ++i)
     {
-        std::string accountName = sBotConfig->RandomBotAccountPrefix + "_" + std::to_string(uint64(now) + i);
-        if (sAccountMgr->CreateAccount(accountName, "playerbot") != AccountOpResult::AOR_OK)
+        // unique-ish, compact suffix (seconds since epoch + index, base-36)
+        std::string suffix = toBase36(uint64(now) + i);
+        std::string prefix = sBotConfig->RandomBotAccountPrefix;
+        size_t const maxPrefix = (MAX_ACCOUNT_STR > suffix.size() + 1)
+            ? (MAX_ACCOUNT_STR - suffix.size() - 1) : 1;
+        if (prefix.size() > maxPrefix)
+            prefix.resize(maxPrefix);
+        std::string accountName = prefix + "_" + suffix;
+
+        AccountOpResult const created = sAccountMgr->CreateAccount(accountName, "playerbot");
+        if (created == AccountOpResult::AOR_NAME_ALREADY_EXIST)
+            continue;   // collided with an earlier audit - just reuse next tick
+        if (created != AccountOpResult::AOR_OK)
         {
-            TC_LOG_ERROR("playerbot", "Could not create bot account {}", accountName);
+            TC_LOG_ERROR("playerbot", "Could not create bot account {} (result {})",
+                accountName, uint32(created));
             return;
         }
 

@@ -75,6 +75,7 @@ private:
     ObjectGuid _attackStartedGuid;  // Attack() already called for this victim
     uint32 _retreatCooldown = 0;
     uint32 _castPaceCooldown = 0;   // one class-script rotation attempt per GCD-ish window
+    uint32 _interruptPaceCooldown = 0;  // pace boss-cast interrupt attempts
 };
 
 #endif

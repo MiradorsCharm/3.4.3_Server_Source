@@ -74,6 +74,17 @@ bool BotSpells::Castable(uint32 spellId, Unit* target) const
     if (!info)
         return false;
 
+    // Do not start a spell while another non-instant cast (generic or
+    // channeled) is already in progress. The core rejects that with the
+    // "(ServerSide check) ... Attempt to cast spell" error and, in this build,
+    // does NOT abort the offending cast - so without this gate the bot spammed
+    // that log line every tick (classically Conjure Food/Water and Arcane
+    // Brilliance chained back to back). This mirrors the exact predicate the
+    // core uses in Spell::prepare: IsNonMeleeSpellCast(withDelayed=false,
+    // skipChanneled=false, skipAutorepeat=true).
+    if (_bot->IsNonMeleeSpellCast(false, false, true))
+        return false;
+
     // A spell with a cast time cannot be prepared while the player is still
     // flagged as moving (Spell::CheckMovement); firing it now would only
     // produce a SPELL_FAILED_MOVING. Instants are fine.

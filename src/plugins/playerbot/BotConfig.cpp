@@ -45,6 +45,12 @@ bool BotConfig::Load()
     EatDrinkPct = getInt("AiPlayerbot.EatDrinkPct", 50);
     Grind = sConfigMgr->GetBoolDefault("AiPlayerbot.Grind", true);
 
+    AvoidGroundHazards = sConfigMgr->GetBoolDefault("AiPlayerbot.AvoidGroundHazards", true);
+    HazardSafetyMargin = sConfigMgr->GetFloatDefault("AiPlayerbot.HazardSafetyMargin", 2.0f);
+    if (HazardSafetyMargin < 0.0f || HazardSafetyMargin > 15.0f)
+        HazardSafetyMargin = 2.0f;
+    InterruptCasts = sConfigMgr->GetBoolDefault("AiPlayerbot.InterruptCasts", true);
+
     RandomBotCount = getInt("AiPlayerbot.RandomBotCount", 0);
     RandomBotMinLevel = getInt("AiPlayerbot.RandomBotMinLevel", 1);
     RandomBotMaxLevel = getInt("AiPlayerbot.RandomBotMaxLevel", 60);

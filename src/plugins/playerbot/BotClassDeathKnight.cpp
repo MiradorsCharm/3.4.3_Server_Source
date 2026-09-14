@@ -30,12 +30,18 @@ namespace
     constexpr uint32 FROST_PRESENCE[] = { 48266 };
     constexpr uint32 BLOOD_PRESENCE[] = { 48263 };
     constexpr uint32 DARK_COMMAND[] = { 56222 };
+    constexpr uint32 MIND_FREEZE[] = { 47528 };   // instant spell interrupt (Frost)
 }
 
 class BotClassDeathKnightAI : public BotClassAI
 {
 public:
     explicit BotClassDeathKnightAI(BotAI* ai) : BotClassAI(ai) { }
+
+    std::vector<uint32> GetInterruptSpells() const override
+    {
+        return { std::begin(MIND_FREEZE), std::end(MIND_FREEZE) };
+    }
 
     bool CanTank() const override { return true; }
 

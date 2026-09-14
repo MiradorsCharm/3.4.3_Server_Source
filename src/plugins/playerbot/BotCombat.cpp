@@ -117,6 +117,21 @@ void BotCombat::Update(uint32 diff)
     else
         UpdateRanged(victim, diff);
 
+    // Dungeon/raid mechanic: interrupt a dangerous boss/trash cast the instant
+    // it starts, ahead of the normal rotation and off the rotation's pacing so
+    // a short cast is not missed. The class supplies its own interrupt kit
+    // (Counterspell/Kick/Pummel/Mind Freeze/Wind Shear/...); classes without
+    // one no-op here.
+    if (_interruptPaceCooldown > diff)
+        _interruptPaceCooldown -= diff;
+    else
+        _interruptPaceCooldown = 0;
+    if (sBotConfig->InterruptCasts && _interruptPaceCooldown == 0)
+    {
+        if (_ai->GetClassAI().TryInterruptVictim())
+            _interruptPaceCooldown = 800;   // brief pace so we don't fan the whole kit at once
+    }
+
     // Class script runs once per GCD-ish window whenever we are not standing
     // in a hard cast (the cast holds the floor by itself - the script's casts
     // set CURRENT_GENERIC_SPELL and the next window sees IsCasting()). The
@@ -177,14 +192,30 @@ void BotCombat::UpdateRanged(Unit* victim, uint32 /*diff*/)
         if (mover.IsMoving() || !CanRetreat())
             return;
 
-        float const away = _bot->GetAbsoluteAngle(victim) + float(M_PI) + frand(-0.5f, 0.5f);
+        // Pick a backpedal direction that does not put us into a ground effect:
+        // try straight back first, then fan out to either side.
         float const backTo = std::min(standRange, minRange + 4.0f);
-        float const x = _bot->GetPositionX() + std::cos(away) * (backTo - dist);
-        float const y = _bot->GetPositionY() + std::sin(away) * (backTo - dist);
-        float z = victim->GetPositionZ();
-        _bot->UpdateGroundPositionZ(x, y, z);
-        mover.MoveTo(x, y, z, 0.5f, true);
-        StartedRetreat();
+        float const baseAway = _bot->GetAbsoluteAngle(victim) + float(M_PI);
+        BotHazards& hazards = _ai->GetHazards();
+
+        static float const fan[] = { 0.0f, 0.6f, -0.6f, 1.2f, -1.2f, float(M_PI) };
+        for (float off : fan)
+        {
+            float const away = baseAway + off;
+            float const x = _bot->GetPositionX() + std::cos(away) * (backTo - dist);
+            float const y = _bot->GetPositionY() + std::sin(away) * (backTo - dist);
+            float z = victim->GetPositionZ();
+            _bot->UpdateGroundPositionZ(x, y, z);
+
+            if (hazards.IsSpotDangerous(x, y, z) ||
+                hazards.IsPathDangerous(_bot->GetPositionX(), _bot->GetPositionY(), x, y))
+                continue;
+
+            mover.MoveTo(x, y, z, 0.5f, true);
+            StartedRetreat();
+            return;
+        }
+        // Every backpedal is into fire; hold and let the hazard pass handle it.
         return;
     }
 

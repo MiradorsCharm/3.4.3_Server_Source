@@ -35,12 +35,18 @@ namespace
     constexpr uint32 ANCESTRAL_SPIRIT[] = { 2008, 20609, 20610, 20611, 20612, 20613, 20776, 20777 };
     constexpr uint32 CURE_TOXINS[] = { 526 };
     constexpr uint32 CLEANSE_SPIRIT[] = { 51886 };
+    constexpr uint32 WIND_SHEAR[] = { 57994 };   // instant spell interrupt
 }
 
 class BotClassShamanAI : public BotClassAI
 {
 public:
     explicit BotClassShamanAI(BotAI* ai) : BotClassAI(ai) { }
+
+    std::vector<uint32> GetInterruptSpells() const override
+    {
+        return { std::begin(WIND_SHEAR), std::end(WIND_SHEAR) };
+    }
 
     bool IsMeleeClass() const override { return false; }
     float GetMinRange() const override { return 0.0f; }

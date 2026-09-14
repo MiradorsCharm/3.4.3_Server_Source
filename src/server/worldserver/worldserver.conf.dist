@@ -4599,6 +4599,35 @@ AiPlayerbot.EatDrinkPct = 50
 AiPlayerbot.Grind = 1
 
 #
+#    AiPlayerbot.AvoidGroundHazards
+#        Description: Bots read the floor for hostile ground effects (fire,
+#                     poison, Defile, Rain of Fire, Death and Decay, ...) and
+#                     step out of them instead of standing there dying. Works
+#                     for both AreaTrigger and DynamicObject ground spells.
+#        Default:     1 (on)
+
+AiPlayerbot.AvoidGroundHazards = 1
+
+#
+#    AiPlayerbot.HazardSafetyMargin
+#        Description: Extra yards a bot keeps clear beyond a ground effect's
+#                     own radius, so it leaves a real buffer instead of hugging
+#                     the exact edge. Clamped to 0..15.
+#        Default:     2.0
+
+AiPlayerbot.HazardSafetyMargin = 2.0
+
+#
+#    AiPlayerbot.InterruptCasts
+#        Description: Bots interrupt dangerous, interruptible casts on their
+#                     target (boss/trash nukes and heals) with their class kit
+#                     (Counterspell, Kick, Pummel/Shield Bash, Wind Shear,
+#                     Mind Freeze, ...) when one is available and ready.
+#        Default:     1 (on)
+
+AiPlayerbot.InterruptCasts = 1
+
+#
 #    AiPlayerbot.RandomBotCount
 #        Description: How many random bots should be online. 0 disables the
 #                     random bot pool.

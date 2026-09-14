@@ -24,6 +24,7 @@
 #include "BotCombat.h"
 #include "BotLoot.h"
 #include "BotClassAI.h"
+#include "BotHazards.h"
 #include "ObjectGuid.h"
 #include "Optional.h"
 
@@ -54,6 +55,7 @@ public:
     BotCombat& GetCombat() { return *_combat; }
     BotLoot& GetLoot() { return *_loot; }
     BotClassAI& GetClassAI() { return *_classAI; }
+    BotHazards& GetHazards() { return *_hazards; }
 
     // --- master / orders ---------------------------------------------------
     void SetMaster(Player* master);
@@ -142,6 +144,9 @@ public:
 private:
     void UpdateDeath(uint32 diff);
     void UpdateBrain(uint32 diff);
+    /// step out of ground effects (dungeon/raid mechanic awareness); returns
+    /// true when it took control of movement this tick
+    bool UpdateHazardAvoidance(uint32 diff);
     void UpdateRetaliate();
     void UpdatePartyCare(uint32 diff);
     void UpdateConsume(uint32 diff);
@@ -159,6 +164,7 @@ private:
     std::unique_ptr<BotCombat> _combat;
     std::unique_ptr<BotLoot> _loot;
     std::unique_ptr<BotClassAI> _classAI;
+    std::unique_ptr<BotHazards> _hazards;
 
     ObjectGuid _masterGuid;
     bool _randomBot = false;
@@ -183,6 +189,11 @@ private:
 
     // death / revive
     uint32 _deadTimer = 0;
+
+    // dungeon/raid mechanic awareness
+    bool _dodging = false;                 // currently running out of a hazard
+    uint32 _hazardReactCooldown = 0;       // pace re-issuing a new escape goal
+    uint32 _interruptCooldown = 0;         // pace boss-cast interrupt attempts
 
     // idle timers
     uint32 _regenCheckTimer = 0;

@@ -82,48 +82,73 @@ namespace
         }
     }
 
-    std::string InList(std::vector<uint32> const& ids)
-    {
-        std::string out;
-        for (size_t i = 0; i < ids.size(); ++i)
-        {
-            if (i)
-                out += ",";
-            out += std::to_string(ids[i]);
-        }
-        return out;
-    }
-
     // Best usable item of the given class/subclasses for this character.
+    //
+    // 3.4.3 has NO `world.item_template` table - item data lives in the DB2
+    // client stores (Item.db2 / ItemSparse.db2), loaded into
+    // ObjectMgr::_itemTemplateStore at startup. The previous port queried the
+    // 3.3.5 SQL table, which does not exist here: every FindBestItem call
+    // failed with "[1146] Table 'world.item_template' doesn't exist" and the
+    // bot ended up naked. We instead scan the in-memory template store, which
+    // is both correct for this core and far cheaper than a DB round trip.
     uint32 FindBestItem(Player* bot, uint32 itemClass, std::vector<uint32> const& subclasses, uint32 inventoryType)
     {
-        uint32 const classMask = (bot->GetClass() - 1) < 11 ? (1u << (bot->GetClass() - 1)) : 0u;
-        uint32 const raceMask = (bot->GetRace() - 1) < 32 ? (1u << (bot->GetRace() - 1)) : 0u;
+        uint8 const cls = bot->GetClass();
+        uint8 const race = bot->GetRace();
+        uint32 const classMask = (cls >= 1 && cls <= MAX_CLASSES) ? (1u << (cls - 1)) : 0u;
         uint32 const level = bot->GetLevel();
 
-        std::string query = Trinity::StringFormat(
-            "SELECT entry FROM item_template WHERE class = {} AND subclass IN ({}) AND InventoryType = {} "
-            "AND RequiredLevel <= {} AND (AllowableClass = -1 OR (AllowableClass & {}) <> 0) "
-            "AND (AllowableRace = -1 OR (AllowableRace & {}) <> 0) "
-            "AND Quality >= 2 ORDER BY RequiredLevel DESC, ItemLevel DESC LIMIT 4",
-            itemClass, InList(subclasses), inventoryType, level, classMask, raceMask);
-
-        QueryResult result = WorldDatabase.Query(query.c_str());
-        if (!result)
-            return 0;
-
-        do
+        auto wantsSubclass = [&subclasses](uint32 subclass)
         {
-            Field* fields = result->Fetch();
-            uint32 entry = fields[0].GetUInt32();
-            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
-            if (!proto)
-                continue;
-            if (bot->CanUseItem(proto, false) == EQUIP_ERR_OK)
-                return entry;
-        } while (result->NextRow());
+            for (uint32 s : subclasses)
+                if (s == subclass)
+                    return true;
+            return false;
+        };
 
-        return 0;
+        uint32 bestEntry = 0;
+        int32 bestReqLevel = -1;
+        uint32 bestItemLevel = 0;
+
+        for (auto const& [entry, proto] : sObjectMgr->GetItemTemplateStore())
+        {
+            if (proto.GetClass() != itemClass)
+                continue;
+            if (!wantsSubclass(proto.GetSubClass()))
+                continue;
+            if (uint32(proto.GetInventoryType()) != inventoryType)
+                continue;
+            if (proto.GetQuality() < ITEM_QUALITY_UNCOMMON)
+                continue;
+            if (proto.GetBaseRequiredLevel() > int32(level))
+                continue;
+
+            int32 const allowableClass = proto.GetAllowableClass();
+            if (allowableClass != -1 && classMask && (uint32(allowableClass) & classMask) == 0)
+                continue;
+
+            Trinity::RaceMask<int64> const allowableRace = proto.GetAllowableRace();
+            if (!allowableRace.IsEmpty() && allowableRace.RawValue != -1 && !allowableRace.HasRace(race))
+                continue;
+
+            // Prefer the highest required level, then the highest item level -
+            // the same ordering the old SQL query used.
+            int32 const reqLevel = proto.GetBaseRequiredLevel();
+            uint32 const itemLevel = proto.GetItemLevel();
+            if (reqLevel < bestReqLevel)
+                continue;
+            if (reqLevel == bestReqLevel && itemLevel <= bestItemLevel)
+                continue;
+
+            if (bot->CanUseItem(&proto, false) != EQUIP_ERR_OK)
+                continue;
+
+            bestEntry = entry;
+            bestReqLevel = reqLevel;
+            bestItemLevel = itemLevel;
+        }
+
+        return bestEntry;
     }
 
     // Weapon skill spells (Swords, Bows, ...) carry SPELL_EFFECT_SKILL and

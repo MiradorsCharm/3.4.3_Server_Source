@@ -99,6 +99,7 @@ void BotMovement::MoveTo(float x, float y, float z, float stopDistance, bool fac
     _stopDistance = std::max(0.0f, stopDistance);
     _faceGoal = faceGoal;
     _maxDistance = 0.0f;
+    _followDistance = 0.0f;
     _wantedFacing.reset();
 }
 
@@ -115,10 +116,11 @@ void BotMovement::Chase(Unit* target, float stopDistance, float maxDistance)
     _stopDistance = std::max(0.0f, stopDistance);
     _maxDistance = maxDistance;
     _faceGoal = true;
+    _followDistance = 0.0f;
     _wantedFacing.reset();
 }
 
-void BotMovement::Follow(Unit* target, float distance)
+void BotMovement::Follow(Unit* target, float distance, float angleOffset)
 {
     if (!target)
     {
@@ -129,6 +131,8 @@ void BotMovement::Follow(Unit* target, float distance)
     _goalUnit = target->GetGUID();
     _goalPoint.Relocate(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
     _stopDistance = std::max(0.5f, distance);
+    _followDistance = _stopDistance;
+    _followAngleOffset = angleOffset;
     _maxDistance = 0.0f;
     _faceGoal = false;
     _wantedFacing.reset();
@@ -139,6 +143,7 @@ void BotMovement::Stop()
     _mode = BotMoveMode::None;
     _goalUnit.Clear();
     _stopDistance = 0.0f;
+    _followDistance = 0.0f;
     _faceGoal = false;
     _wantedFacing.reset();
     _moveBudgetMs = 0;
@@ -160,6 +165,15 @@ bool BotMovement::GetGoalPosition(float& x, float& y, float& z) const
             x = unit->GetPositionX();
             y = unit->GetPositionY();
             z = unit->GetPositionZ();
+            // Follow: aim for a formation slot behind the leader instead of the
+            // leader's exact position, so several bots spread into an arc rather
+            // than stacking on one tile.
+            if (_mode == BotMoveMode::Follow && _followDistance > 0.0f)
+            {
+                float const slot = unit->GetOrientation() + float(M_PI) + _followAngleOffset;
+                x += std::cos(slot) * _followDistance;
+                y += std::sin(slot) * _followDistance;
+            }
             return true;
         }
     x = _goalPoint.GetPositionX();
@@ -518,10 +532,15 @@ void BotMovement::Update(uint32 diff)
                 return;
             }
             // Follow keeps its distance; chase wants to be inside stopDistance.
+            // Measure against the formation slot (gx,gy) rather than the leader,
+            // so an offset follower settles into its slot instead of piling onto
+            // the leader's tile.
             if (_mode == BotMoveMode::Follow)
             {
-                float planar = _bot->GetExactDist2d(goal);
-                if (planar <= _stopDistance + 1.0f)
+                float dx = _bot->GetPositionX() - gx;
+                float dy = _bot->GetPositionY() - gy;
+                float planar = std::sqrt(dx * dx + dy * dy);
+                if (planar <= 1.5f)
                 {
                     if (_moving)
                         SendStop(_bot->GetPositionX(), _bot->GetPositionY(), _bot->GetPositionZ(), _bot->GetOrientation(), _bot->IsInWater());

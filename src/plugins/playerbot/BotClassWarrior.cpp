@@ -29,12 +29,23 @@ namespace
     constexpr uint32 TAUNT[] = { 355 };
     constexpr uint32 DEMO_SHOUT[] = { 1160, 6190, 11554, 11555, 11556, 25203, 47437 };
     constexpr uint32 SHIELD_SLAM[] = { 23922, 23923, 23924, 23925, 25258, 30356, 47487, 47488 };
+    // Pummel (Berserker Stance) and Shield Bash (Battle/Defensive w/ shield) -
+    // the class's spell interrupts. Pummel first: no shield requirement.
+    constexpr uint32 PUMMEL[] = { 6552, 6554 };
+    constexpr uint32 SHIELD_BASH[] = { 72, 1671, 1672 };
 }
 
 class BotClassWarriorAI : public BotClassAI
 {
 public:
     explicit BotClassWarriorAI(BotAI* ai) : BotClassAI(ai) { }
+
+    std::vector<uint32> GetInterruptSpells() const override
+    {
+        std::vector<uint32> kit(std::begin(PUMMEL), std::end(PUMMEL));
+        kit.insert(kit.end(), std::begin(SHIELD_BASH), std::end(SHIELD_BASH));
+        return kit;
+    }
 
     bool CanTank() const override { return true; }
 

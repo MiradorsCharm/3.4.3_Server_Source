@@ -54,7 +54,10 @@ public:
     // --- goals -------------------------------------------------------------
     void MoveTo(float x, float y, float z, float stopDistance, bool faceGoal = false);
     void Chase(Unit* target, float stopDistance, float maxDistance = 0.0f);
-    void Follow(Unit* target, float distance);
+    /// Follow a unit at 'distance'. 'angleOffset' (radians, relative to the
+    /// target's facing) spreads several followers into a loose arc instead of
+    /// stacking them all on one point.
+    void Follow(Unit* target, float distance, float angleOffset = 0.0f);
     void Stop();
     /// Turn in place while stationary (sends heartbeats with a new
     /// orientation - the only facing mechanism that sticks for a player).
@@ -104,6 +107,7 @@ private:
     Position _goalPoint;                // Point (and fallback for unresolved units)
     float _stopDistance = 0.0f;
     float _followDistance = 0.0f;       // Follow
+    float _followAngleOffset = 0.0f;    // Follow: formation slot (radians)
     float _maxDistance = 0.0f;          // Chase: never chase further than this
     bool _faceGoal = false;             // turn toward the goal on arrival
 

@@ -46,6 +46,11 @@ public:
     bool IsMeleeClass() const override { return false; }
     float GetMinRange() const override { return 0.0f; }
 
+    std::vector<uint32> GetInterruptSpells() const override
+    {
+        return { std::begin(COUNTERSPELL), std::end(COUNTERSPELL) };
+    }
+
     void CureTick(BotAI& ai) override
     {
         if (uint32 cure = Rank(REMOVE_CURSE))
@@ -110,10 +115,9 @@ public:
 
         HealTick(ai);
 
-        // interrupt dangerous casts
-        if (victim->IsNonMeleeSpellCast(false))
-            if (CastOnVictim(Rank(COUNTERSPELL)))
-                return;
+        // Interrupts (Counterspell) are handled centrally by BotCombat's
+        // dungeon/raid interrupt pass via GetInterruptSpells(), which only
+        // fires on casts actually worth stopping.
 
         // sheep enemy players so the fight becomes 1v1 for a while
         if (victim->IsPlayer() && !VictimHasAura(Rank(POLYMORPH)))
