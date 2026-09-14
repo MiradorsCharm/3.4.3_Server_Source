@@ -225,7 +225,9 @@ account; GMs can always command.
   the proposal automatically and play the dungeon with the normal combat
   and loot brains.
 * **Economy**: `sell` vendors gray junk and posts unneeded equipment on the
-  auction house (brought to a vendor/auctioneer like a player would).
+  auction house (brought to a vendor/auctioneer like a player would). Mail
+  sent to a bot (items, gold) is collected automatically once a minute while
+  it stands at a mailbox; COD mails are never paid.
 
 ## 7. Combat behaviour
 

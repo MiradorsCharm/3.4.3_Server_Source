@@ -308,5 +308,15 @@ class AdvancedServicesTest(unittest.TestCase):
         self.assertIn("BotQueues::NotePacket(bot, packet)", manager)
 
 
+    def test_mail_is_collected_automatically(self):
+        interact = (PLUGIN / "BotInteract.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("HandleMailTakeItem", interact)
+        self.assertIn("HandleMailTakeMoney", interact)
+        self.assertIn("HandleMailDelete", interact)
+        self.assertIn("GAMEOBJECT_TYPE_MAILBOX", interact)
+        # a bot never pays COD
+        self.assertIn("!mail->COD", interact)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

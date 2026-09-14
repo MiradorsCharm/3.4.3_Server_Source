@@ -20,15 +20,119 @@
 #include "Server/Packets/GuildPackets.h"
 #include "Server/Packets/ItemPackets.h"
 #include "Server/Packets/AuctionHousePackets.h"
+#include "Server/Packets/MailPackets.h"
+#include "Mail.h"
+#include "GameObject.h"
 #include "Opcodes.h"
 #include "AuctionHouse/AuctionHouseMgr.h"
 #include "Map.h"
 #include "Log.h"
 
+#include <ctime>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace
 {
+    // per-bot throttle for the mail sweep
+    std::unordered_map<ObjectGuid, time_t>& MailSweepClock()
+    {
+        static std::unordered_map<ObjectGuid, time_t> map;
+        return map;
+    }
+
+    struct MailboxCheck
+    {
+        WorldObject const* obj;
+        mutable float range;
+
+        MailboxCheck(WorldObject const* o, float r) : obj(o), range(r) { }
+
+        bool operator()(GameObject* go) const
+        {
+            if (!go || !go->IsInWorld() || go->GetGoType() != GAMEOBJECT_TYPE_MAILBOX)
+                return false;
+            if (!obj->IsWithinDist(go, range) || !obj->CanSeeOrDetect(go))
+                return false;
+            range = obj->GetDistance(go);
+            return true;
+        }
+    };
+
+    GameObject* FindMailbox(Player* bot)
+    {
+        GameObject* result = nullptr;
+        MailboxCheck check(bot, 5.0f);
+        Trinity::GameObjectLastSearcher<MailboxCheck> searcher(bot, result, check);
+        Cell::VisitAllObjects(bot, searcher, 5.0f);
+        return result;
+    }
+
+    /// collect attachments + money from every delivered, non-COD mail while
+    /// standing at a mailbox, then delete the mail - what a player does when
+    /// they click through their inbox, done on a 60s cadence
+    void SweepMail(Player* bot)
+    {
+        time_t const now = time(nullptr);
+        auto& clock = MailSweepClock();
+        auto it = clock.find(bot->GetGUID());
+        if (it != clock.end() && it->second + 60 > now)
+            return;
+        clock[bot->GetGUID()] = now;
+
+        bool hasContent = false;
+        for (Mail const* mail : bot->GetMails())
+        {
+            if (!mail)
+                continue;
+            if (mail->deliver_time > now || mail->COD)
+                continue;                           // undelivered or cash-on-demand
+            if (mail->money || mail->HasItems())
+            {
+                hasContent = true;
+                break;
+            }
+        }
+        if (!hasContent)
+            return;
+
+        GameObject* mailbox = FindMailbox(bot);
+        if (!mailbox)
+            return;                                 // walk to a mailbox first
+
+        WorldSession* session = bot->GetSession();
+        std::vector<Mail*> mails;
+        for (Mail* mail : bot->GetMails())
+            if (mail && mail->deliver_time <= now && !mail->COD && (mail->money || mail->HasItems()))
+                mails.push_back(mail);
+
+        for (Mail* mail : mails)
+        {
+            for (MailItemInfo const& item : mail->items)
+            {
+                WorldPackets::Mail::MailTakeItem take{WorldPacket(CMSG_MAIL_TAKE_ITEM)};
+                take.Mailbox = mailbox->GetGUID();
+                take.MailID = mail->messageID;
+                take.AttachID = item.item_guid;
+                session->HandleMailTakeItem(take);
+            }
+
+            if (mail->money)
+            {
+                WorldPackets::Mail::MailTakeMoney money{WorldPacket(CMSG_MAIL_TAKE_MONEY)};
+                money.Mailbox = mailbox->GetGUID();
+                money.MailID = mail->messageID;
+                money.Money = mail->money;
+                session->HandleMailTakeMoney(money);
+            }
+
+            WorldPackets::Mail::MailDelete del{WorldPacket(CMSG_MAIL_DELETE)};
+            del.MailID = mail->messageID;
+            del.DeleteReason = 0;
+            session->HandleMailDelete(del);
+        }
+    }
+
     // trades the bot already opened its half of (reset when the trade ends)
     std::unordered_set<ObjectGuid>& BegunTrades()
     {
@@ -80,6 +184,8 @@ namespace BotInteract
         WorldSession* session = bot->GetSession();
         if (!session)
             return;
+
+        SweepMail(bot);
 
         BotAI* ai = bot->GetBotAI();
 

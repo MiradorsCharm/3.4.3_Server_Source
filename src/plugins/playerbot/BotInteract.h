@@ -6,6 +6,9 @@
  * time out. This module answers them through the same WorldSession handlers
  * the client's packets end in - but only from people the bot already trusts
  * (its master, a GM, its own account).
+ *
+ * Mail a bot receives (items, gold) is collected automatically once per
+ * minute while the bot stands at a mailbox; COD mails are never paid.
  */
 
 #ifndef PLAYERBOT_BOT_INTERACT_H
