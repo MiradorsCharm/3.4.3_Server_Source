@@ -1,29 +1,29 @@
+-- Playerbot AI - characters database schema.
 --
--- AI Playerbot (ported from ike3/mangosbot) - characters database schema
---
--- Apply this file to your characters database:
+-- Apply once to your characters database:
 --   mysql -u trinity -p characters < sql/custom/playerbot/characters_playerbot.sql
 --
 -- Every table carries an explicit COLLATE utf8mb4_unicode_ci on purpose: it is
--- the collation of the core tables these JOIN against (characters, guild), and
--- a table left to the database default (utf8mb4_0900_ai_ci on MySQL 8) makes
+-- the collation of the core tables these JOIN against (characters), and a
+-- table left to the database default (utf8mb4_0900_ai_ci on MySQL 8) makes
 -- every name lookup fail with errno 1267 "Illegal mix of collations".
 --
+-- The script is idempotent (CREATE TABLE IF NOT EXISTS) and can be re-run.
+-- (It is also created automatically on worldserver startup if missing.)
 
--- Random bot bookkeeping (login/logout/randomize/teleport schedules).
-CREATE TABLE IF NOT EXISTS `ai_playerbot_random_bots` (
-    `owner` INT UNSIGNED NOT NULL DEFAULT 0,
-    `bot` INT UNSIGNED NOT NULL DEFAULT 0,
-    `time` INT UNSIGNED NOT NULL DEFAULT 0,
-    `validIn` INT UNSIGNED NOT NULL DEFAULT 0,
-    `event` VARCHAR(64) NOT NULL DEFAULT '',
-    `value` INT UNSIGNED NOT NULL DEFAULT 0,
-    PRIMARY KEY (`owner`, `bot`, `event`),
-    KEY `idx_event` (`event`),
-    KEY `idx_bot` (`bot`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot random bot events';
+-- Bot -> master bindings. A row makes the bot log back in automatically the
+-- next time its master enters the world (written by `.bot add`, cleared by
+-- `.bot remove`; also created automatically on worldserver startup).
+CREATE TABLE IF NOT EXISTS `characters_playerbot` (
+    `guid` INT UNSIGNED NOT NULL,
+    `master` INT UNSIGNED NOT NULL,
+    PRIMARY KEY (`guid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot master bindings';
 
--- Pool of names used when random bot characters are created.
+-- Pool of names used when random bot characters are created. Operator data:
+-- the server only reads free rows; add names with plain INSERTs.
+--   INSERT INTO ai_playerbot_names (name) VALUES ('Nameone'), ('Nametwo');
+-- A bot pass needs at least AiPlayerbot.RandomBotCount unused names.
 CREATE TABLE IF NOT EXISTS `ai_playerbot_names` (
     `name_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `name` VARCHAR(12) NOT NULL,
@@ -32,63 +32,11 @@ CREATE TABLE IF NOT EXISTS `ai_playerbot_names` (
     UNIQUE KEY `idx_name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot random character names';
 
--- Pool of names used when random bot guilds are created.
-CREATE TABLE IF NOT EXISTS `ai_playerbot_guild_names` (
-    `name_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    `name` VARCHAR(24) NOT NULL,
-    PRIMARY KEY (`name_id`),
-    UNIQUE KEY `idx_name` (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot random guild names';
-
--- Guild tasks handed out by bot guilds.
-CREATE TABLE IF NOT EXISTS `ai_playerbot_guild_tasks` (
-    `owner` INT UNSIGNED NOT NULL DEFAULT 0,
-    `guildid` INT UNSIGNED NOT NULL DEFAULT 0,
-    `time` INT UNSIGNED NOT NULL DEFAULT 0,
-    `validIn` INT UNSIGNED NOT NULL DEFAULT 0,
-    `type` VARCHAR(32) NOT NULL DEFAULT '',
-    `value` INT UNSIGNED NOT NULL DEFAULT 0,
-    PRIMARY KEY (`owner`, `guildid`, `type`),
-    KEY `idx_guild` (`guildid`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot guild tasks';
-
--- Free form chatter used by the "chat" strategy.
-CREATE TABLE IF NOT EXISTS `ai_playerbot_speech` (
-    `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    `name` VARCHAR(64) NOT NULL,
-    `text` VARCHAR(255) NOT NULL,
-    `type` VARCHAR(16) NOT NULL DEFAULT 'say',
-    PRIMARY KEY (`id`),
-    KEY `idx_name` (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot chatter';
-
-CREATE TABLE IF NOT EXISTS `ai_playerbot_speech_probability` (
-    `name` VARCHAR(64) NOT NULL,
-    `probability` INT UNSIGNED NOT NULL DEFAULT 0,
-    PRIMARY KEY (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot chatter probability';
-
--- User defined strategies (".bot strategy" / "co +custom::<name>").
-CREATE TABLE IF NOT EXISTS `ai_playerbot_custom_strategy` (
-    `name` VARCHAR(64) NOT NULL,
-    `action_line` VARCHAR(255) NOT NULL,
-    PRIMARY KEY (`name`, `action_line`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot custom strategies';
-
--- A handful of starter names so random bots can be created out of the box.
-INSERT IGNORE INTO `ai_playerbot_names` (`name`) VALUES
-('Aeltar'), ('Baldrin'), ('Cathmor'), ('Dornan'), ('Eldrik'), ('Faelan'),
-('Gorvin'), ('Halbrik'), ('Ithran'), ('Jorlan'), ('Kelvar'), ('Lorwyn'),
-('Mordak'), ('Nyrelle'), ('Orwin'), ('Perrin'), ('Quenna'), ('Rhogar'),
-('Sylvara'), ('Torvald'), ('Ulther'), ('Varlen'), ('Wyndel'), ('Xanthe'),
-('Yorik'), ('Zaltar'), ('Ashwyn'), ('Brannoc'), ('Cirien'), ('Draveth'),
-('Elowen'), ('Fenwick'), ('Gwynor'), ('Harlow'), ('Isolde'), ('Jareth'),
-('Kaelith'), ('Lyanna'), ('Merrick'), ('Norwyn'), ('Ondrel'), ('Pellan'),
-('Rowena'), ('Selwyn'), ('Thalric'), ('Ulmara'), ('Verrik'), ('Wilrun'),
-('Yalira'), ('Zeryth');
-
-INSERT IGNORE INTO `ai_playerbot_guild_names` (`name`) VALUES
-('The Wandering Blades'), ('Sons of Lordaeron'), ('Emerald Vanguard'),
-('Ashen Company'), ('Stormwatch'), ('The Silver Hand Irregulars'),
-('Dawnbreakers'), ('Ironforge Regulars'), ('Nightfall Covenant'),
-('The Last Caravan');
+-- Notes for operators upgrading from the previous ike3/mangosbot port:
+--  * your existing bot characters keep working: add them with `.bot add <name>`;
+--  * random bots are every character whose ACCOUNT name starts with
+--    AiPlayerbot.RandomBotAccountPrefix (default "rndbot") - old random bot
+--    accounts created by the previous system are picked up automatically;
+--  * the old ai_playerbot_random_bots / ai_playerbot_custom_strategy /
+--    ai_playerbot_tellitem / ai_playerbot_guild_tasks / ai_playerbot_texts
+--    tables are no longer read and can be dropped.

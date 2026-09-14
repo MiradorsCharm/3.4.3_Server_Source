@@ -1029,9 +1029,8 @@ enum class ZonePVPTypeOverride : uint32
     Combat      = 4
 };
 
-// Playerbot mod (ported from ike3/mangosbot)
-class PlayerbotAI;
-class PlayerbotMgr;
+// Playerbot mod: attached per-bot AI (implemented in the plugins library)
+class BotAI;
 
 class TC_GAME_API Player final : public Unit, public GridObject<Player>
 {
@@ -3107,15 +3106,12 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         bool CanExecutePendingSpellCastRequest();
 
     public:
-        // Playerbot mod (ported from ike3/mangosbot)
-        void SetPlayerbotAI(PlayerbotAI* ai) { _playerbotAI = ai; }
-        PlayerbotAI* GetPlayerbotAI() const { return _playerbotAI; }
-        void SetPlayerbotMgr(PlayerbotMgr* mgr) { _playerbotMgr = mgr; }
-        PlayerbotMgr* GetPlayerbotMgr() const { return _playerbotMgr; }
+        // Playerbot mod: the per-bot AI owned by the plugins library
+        void SetBotAI(BotAI* ai) { _botAI = ai; }
+        BotAI* GetBotAI() const { return _botAI; }
 
     private:
-        PlayerbotAI* _playerbotAI = nullptr;
-        PlayerbotMgr* _playerbotMgr = nullptr;
+        BotAI* _botAI = nullptr;
 };
 
 TC_GAME_API void AddItemsSetItem(Player* player, Item const* item);
