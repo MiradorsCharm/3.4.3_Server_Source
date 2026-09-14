@@ -887,9 +887,14 @@ void BotAI::UpdateNonCombat(uint32 diff)
 
         if (CanSee(master))
         {
+            // A stable per-bot formation slot: spread followers around a ~150
+            // degree arc behind the master (derived from the low bits of the
+            // GUID so it never changes) instead of stacking on one point.
+            float const slot = (float(_bot->GetGUID().GetCounter() % 7) - 3.0f) * (float(M_PI) / 8.0f);
+
             float dist = _bot->GetExactDist2d(master);
             if (dist > sBotConfig->FollowDistance + 2.0f)
-                _movement->Follow(master, sBotConfig->FollowDistance);
+                _movement->Follow(master, sBotConfig->FollowDistance, slot);
             else
             {
                 _movement->Stop();

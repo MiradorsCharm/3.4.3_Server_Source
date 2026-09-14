@@ -326,17 +326,44 @@ void WorldSession::QueuePacket(WorldPacket* new_packet)
 }
 
 // playerbot mod: bot sessions are not part of the world session map, the bot
-// manager pumps them through this method instead of WorldSession::Update
+// manager pumps them through this method instead of WorldSession::Update.
+//
+// This pump runs on the world thread from BotManager::Update (called at the
+// very start of World::Update, before UpdateSessions and sMapMgr->Update), so
+// no map worker thread is running concurrently: it is safe to process
+// PROCESS_THREADSAFE (map) opcodes here. We therefore drain the queue
+// unconditionally with next(packet) instead of a PacketFilter.
+//
+// Using a filter here was a bug: WorldSessionFilter::Process() returns false
+// for PROCESS_THREADSAFE packets while the player is in world, and
+// LockedQueue::next(result, checker) does NOT pop when the check fails - so
+// the first CMSG_MOVE_* packet a bot ever queued stuck at the head of the
+// queue forever and every later packet starved behind it. That is why bots
+// cast spells and accepted invites (direct handler calls) but never moved and
+// appeared to ignore follow/come/attack (all of which need the mover).
 void WorldSession::HandleBotPackets()
 {
-    WorldSessionFilter updater(this);
     WorldPacket* packet = nullptr;
     uint32 processedPackets = 0;
-    while (_recvQueue.next(packet, updater))
+    while (_recvQueue.next(packet))
     {
         OpcodeClient opcode = static_cast<OpcodeClient>(packet->GetOpcode());
         if (ClientOpcodeHandler const* opHandle = opcodeTable[opcode])
         {
+            // Most bot opcodes are STATUS_LOGGEDIN and dereference _player /
+            // require the player to be in world (HandleMovementOpcode asserts a
+            // mover). While the bot is still loading, requeue those and try
+            // again next pump instead of calling into a half-built player.
+            bool const needsInWorld =
+                opHandle->Status == STATUS_LOGGEDIN || opHandle->Status == STATUS_TRANSFER;
+            if (needsInWorld && (!_player || !_player->IsInWorld()))
+            {
+                _recvQueue.add(packet);   // back of the queue; retried next pump
+                if (++processedPackets > 100)
+                    break;
+                continue;
+            }
+
             try
             {
                 opHandle->Call(this, *packet);
