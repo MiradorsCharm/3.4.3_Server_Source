@@ -50,19 +50,27 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z)
         // Reach/follow actions run every AI tick: tearing down and relaunching
         // the spline each time makes movement stutter and spams spline packets
         // to everyone nearby. If the live spline is already taking us (almost)
-        // there, let it run and just wait for it.
+        // to THIS destination (not some previous target that moved away), let
+        // it run and just wait for it. The old check used to compare against
+        // the spline's FinalDestination() with a stale snapshot from the last
+        // chase, so a target that walked across the clearing would leave the
+        // bot "following" a spline that ended 10 yards short forever - exactly
+        // the "gap not closing" case the combat watchdog reports.
+        bool splineAlreadyOnTarget = false;
         if (!bot->movespline->Finalized())
         {
             auto dest = bot->movespline->FinalDestination();
             float dx = dest.x - x, dy = dest.y - y;
-            if (dx * dx + dy * dy < 2.0f * 2.0f)
-            {
-                WaitForReach(distance);
-                return true;
-            }
+            float dz = dest.z - z;
+            if (dx * dx + dy * dy < 2.0f * 2.0f && dz * dz < 2.0f * 2.0f)
+                splineAlreadyOnTarget = true;
         }
 
-        WaitForReach(distance);
+        if (splineAlreadyOnTarget)
+        {
+            WaitForReach(distance);
+            return true;
+        }
 
         if (bot->IsSitState())
             bot->SetStandState(UNIT_STAND_STATE_STAND);
@@ -77,6 +85,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z)
                 !bot->IsFlying() && !bot->IsUnderWater();
         MotionMaster &mm = *bot->GetMotionMaster();
         mm.Clear();
+        bot->StopMoving();
 
         float botZ = bot->GetPositionZ();
         if (z - botZ > 0.5f && bot->GetDistance2d(x, y) <= 5.0f)
@@ -87,6 +96,7 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z)
         else
             mm.MovePoint(mapId, x, y, z, generatePath);
 
+        WaitForReach(distance);
         AI_VALUE(LastMovement&, "last movement").Set(x, y, z, bot->GetOrientation());
         return true;
     }

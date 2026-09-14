@@ -139,27 +139,50 @@ bool AttackAction::Attack(Unit* target)
     // and a bot that provably cannot walk says so instead of posing forever.
     ai->ChangeEngine(BOT_STATE_COMBAT);
 
-    if (!IsInMeleeRange(target) && !ai->IsRanged(bot))
+    bool const ranged = ai->IsRanged(bot);
+
+    if (!IsInMeleeRange(target))
     {
-        if (!ApproachForMelee(target))
+        if (!ranged)
         {
+            if (!ApproachForMelee(target))
+            {
+                if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                    bot->AttackStop();
+
+                if (verbose)
+                {
+                    ostringstream out;
+                    out << "I cannot get to " << target->GetName();
+                    ai->TellMaster(out);
+                }
+                return false;
+            }
+        }
+        else
+        {
+            // Caster / hunter: do not call bot->Attack() at all when outside melee
+            // reach. The core puts the unit into UNIT_STATE_MELEE_ATTACKING on
+            // Attack() and keeps trying (and failing) a melee swing every tick,
+            // which is what used to set swingErr=NotInRange and make the combat
+            // watchdog think the caster was stuck in melee. Drop any stale melee
+            // swing from a previous victim instead.
             if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
                 bot->AttackStop();
-
-            if (verbose)
-            {
-                ostringstream out;
-                out << "I cannot get to " << target->GetName();
-                ai->TellMaster(out);
-            }
-            return false;
         }
     }
 
     // Unit::Attack is a no-op when the same melee swing is already running,
-    // but skip the call entirely so we never spam AttackStart packets.
-    if (bot->GetVictim() != target || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
-        bot->Attack(target, true);
+    // but skip the call entirely so we never spam AttackStart packets. Only
+    // engage melee when we can actually swing; ranged/caster bots rely on
+    // their spells/auto-shot and must not be put in melee-attacking state
+    // from 13 yards away - doing so leaves swingErr=NotInRange and makes the
+    // combat watchdog think the caster is stuck in melee.
+    if (!ranged || IsInMeleeRange(target))
+    {
+        if (bot->GetVictim() != target || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+            bot->Attack(target, true);
+    }
 
     return true;
 }
