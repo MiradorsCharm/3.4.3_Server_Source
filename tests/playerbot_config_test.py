@@ -1,107 +1,166 @@
-"""Check the unified bot config without needing a database or server build.
+#!/usr/bin/env python3
+"""
+Playerbot configuration regression test.
 
-Run: python tests/playerbot_config_test.py
-Check a build/install copy: python tests/playerbot_config_test.py --config <path>
+Validates the AI PLAYERBOT SETTINGS section of the generated
+worldserver.conf.dist:
+
+  * every key BotConfig::Load() reads is present exactly once
+  * no stale keys from the removed strategy-engine port or AhBot helper
+  * values are syntactically valid for the core config parser
+    (no inline comments, no signed junk in unsigned fields)
+
+Run:  python tests/playerbot_config_test.py [--config path/to/worldserver.conf.dist] -v
 """
 
-import argparse
-import ast
-import configparser
-from pathlib import Path
 import re
+import sys
 import unittest
+from pathlib import Path
 
+REPO = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG = REPO / "src" / "server" / "worldserver" / "worldserver.conf.dist"
 
-ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE = ROOT / "src/server/worldserver/worldserver.conf.dist"
-CONFIG = TEMPLATE
-SPEC_PREFIX = "AiPlayerbot.RandomClassSpecProbability."
-WRATH_CLASSES = (*range(1, 10), 11)
-GETTER = re.compile(
-    r'Get(Bool|Int64|Int|Float|String)Default\("((?:AiPlayerbot|AhBot)\.[^"]+)",'
-    r'\s*("[^"]*"|[^,)]+)'
+# Keys the new AI reads (BotConfig::Load), with a value validator each.
+EXPECTED_KEYS = {
+    "AiPlayerbot.Enabled": lambda v: v in ("0", "1"),
+    "AiPlayerbot.Diagnostics": lambda v: v in ("0", "1"),
+    "AiPlayerbot.StallReportMs": lambda v: int(v) >= 1000,
+    "AiPlayerbot.StallReportCooldownMs": lambda v: int(v) >= 1000,
+    "AiPlayerbot.DebugMove": lambda v: v in ("0", "1"),
+    "AiPlayerbot.SightDistance": lambda v: float(v) > 0,
+    "AiPlayerbot.SpellDistance": lambda v: float(v) > 0,
+    "AiPlayerbot.LootDistance": lambda v: float(v) > 0,
+    "AiPlayerbot.FollowDistance": lambda v: float(v) > 0,
+    "AiPlayerbot.WanderRadius": lambda v: float(v) > 0,
+    "AiPlayerbot.MeleeStopFactor": lambda v: 0.1 < float(v) <= 0.95,
+    "AiPlayerbot.CastStandDistance": lambda v: float(v) > 0,
+    "AiPlayerbot.CastMinDistance": lambda v: float(v) > 0,
+    "AiPlayerbot.AutoAssistMaster": lambda v: v in ("0", "1"),
+    "AiPlayerbot.ReviveDelayMs": lambda v: int(v) > 0,
+    "AiPlayerbot.RandomBotCount": lambda v: int(v) >= 0,
+    "AiPlayerbot.RandomBotMinLevel": lambda v: 1 <= int(v) <= 255,
+    "AiPlayerbot.RandomBotMaxLevel": lambda v: 1 <= int(v) <= 255,
+    "AiPlayerbot.RandomBotUpdateInterval": lambda v: int(v) > 0,
+    "AiPlayerbot.RandomBotAccountPrefix": lambda v: v.startswith('"') and v.endswith('"') and len(v) >= 3,
+}
+
+# Keys from the removed port / helper that must not come back silently.
+FORBIDDEN_KEYS = (
+    "AiPlayerbot.CommandPrefix",
+    "AiPlayerbot.CommandServerPort",
+    "AiPlayerbot.GlobalCooldown",
+    "AiPlayerbot.MaxWaitForMove",
+    "AiPlayerbot.ReactDelay",
+    "AiPlayerbot.IterationsPerTick",
+    "AiPlayerbot.ReactDistance",
+    "AiPlayerbot.GrindDistance",
+    "AiPlayerbot.FleeDistance",
+    "AiPlayerbot.TooCloseDistance",
+    "AiPlayerbot.MeleeDistance",
+    "AiPlayerbot.WhisperDistance",
+    "AiPlayerbot.ContactDistance",
+    "AiPlayerbot.FleeingEnabled",
+    "AiPlayerbot.CriticalHealth",
+    "AiPlayerbot.LowHealth",
+    "AiPlayerbot.MediumHealth",
+    "AiPlayerbot.AlmostFullHealth",
+    "AiPlayerbot.LowMana",
+    "AiPlayerbot.MediumMana",
+    "AiPlayerbot.CombatStrategies",
+    "AiPlayerbot.NonCombatStrategies",
+    "AiPlayerbot.RandomBotCombatStrategies",
+    "AiPlayerbot.RandomBotNonCombatStrategies",
+    "AiPlayerbot.RandomBotAutologin",
+    "AiPlayerbot.RandomBotLoginAtStartup",
+    "AiPlayerbot.RandomBotJoinLfg",
+    "AiPlayerbot.MinRandomBots",
+    "AiPlayerbot.MaxRandomBots",
+    "AiPlayerbot.RandomBotMaps",
+    "AiPlayerbot.RandomBotTeleLevel",
+    "AiPlayerbot.RandomBotTeleportDistance",
+    "AiPlayerbot.RandomBotQuestItems",
+    "AiPlayerbot.RandomBotSpellIds",
+    "AiPlayerbot.RandomBotGuildCount",
+    "AiPlayerbot.EnableGuildTasks",
+    "AiPlayerbot.RandomClassSpecProbability",
+    "AhBot.",
 )
 
 
-def numeric_default(expression):
-    """Evaluate only the numeric constants/products used by the config reader."""
-    node = ast.parse(expression.strip().removesuffix("f"), mode="eval").body
-
-    def value(n):
-        if isinstance(n, ast.Constant) and type(n.value) in (int, float):
-            return n.value
-        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mult):
-            return value(n.left) * value(n.right)
-        raise ValueError(f"Unsupported numeric default: {expression}")
-
-    return value(node)
+def parse_config(path: Path):
+    """Return {key: [values]} in file order; inline comments make a value
+    invalid by definition of the core parser."""
+    entries = {}
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("["):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        entries.setdefault(key, []).append((value, lineno))
+    return entries
 
 
 class PlayerbotConfigTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Preserve case and reject duplicate keys. As with Boost's INI reader,
-        # comments after values are NOT stripped (e.g. '80 # comment' is invalid).
-        cls.parser = configparser.ConfigParser(interpolation=None, strict=True)
-        cls.parser.optionxform = str
-        cls.parser.read_string(CONFIG.read_text(encoding="utf-8"))
-        cls.settings = cls.parser["worldserver"]
-        cls.reads = []
-        for source in (ROOT / "src/plugins").rglob("*.cpp"):
-            cls.reads.extend(GETTER.findall(source.read_text(encoding="utf-8")))
+        cfg = sys.argv[sys.argv.index("--config") + 1] if "--config" in sys.argv else None
+        cls.path = Path(cfg) if cfg else DEFAULT_CONFIG
+        cls.entries = parse_config(cls.path)
 
-    def test_only_worldserver_ini_section(self):
-        self.assertEqual(self.parser.sections(), ["worldserver"])
-        self.assertNotIn("ConfVersion", self.settings)
+    def test_config_file_exists(self):
+        self.assertTrue(self.path.exists(), f"{self.path} is missing")
 
-    def test_all_read_settings_are_present_and_active(self):
-        self.assertGreater(len(self.reads), 70, "Config-reader scan unexpectedly found no settings")
-        required = {key for _, key, _ in self.reads}
-        required.update(f"{SPEC_PREFIX}{cls}.{spec}" for cls in WRATH_CLASSES for spec in range(3))
-        actual = {key for key in self.settings if key.startswith(("AiPlayerbot.", "AhBot."))}
-        self.assertEqual(required, actual)
+    def test_all_expected_keys_present_and_valid(self):
+        problems = []
+        for key, check in EXPECTED_KEYS.items():
+            values = self.entries.get(key)
+            if not values:
+                problems.append(f"{key}: MISSING from {self.path}")
+                continue
+            if len(values) > 1:
+                problems.append(f"{key}: defined {len(values)} times (lines {[l for _, l in values]}) - "
+                                "the config parser would silently use the first")
+                continue
+            value, lineno = values[0]
+            try:
+                if not check(value):
+                    problems.append(f"{key}: bad value '{value}' (line {lineno})")
+            except ValueError:
+                problems.append(f"{key}: unparseable value '{value}' (line {lineno})")
+        self.assertEqual(problems, [], "configuration problems:\n  " + "\n  ".join(problems))
 
-    def test_scalar_defaults_match_code_and_have_valid_types(self):
-        for kind, key, default in self.reads:
-            with self.subTest(key=key):
-                actual = self.settings[key]
-                if kind == "String":
-                    # ConfigMgr::GetStringDefault removes the enclosing quotes.
-                    self.assertEqual(actual.strip('"'), ast.literal_eval(default))
-                elif kind == "Bool":
-                    self.assertIn(actual, ("0", "1"))
-                    self.assertEqual(actual == "1", default.strip() == "true")
-                elif kind in ("Int", "Int64"):
-                    self.assertRegex(actual, r"^-?\d+$")
-                    self.assertEqual(int(actual), numeric_default(default))
-                else:
-                    self.assertAlmostEqual(float(actual), numeric_default(default))
+    def test_no_stale_keys(self):
+        stale = [key for key in self.entries
+                 if any(key.startswith(prefix) for prefix in FORBIDDEN_KEYS)]
+        self.assertEqual(stale, [], f"stale keys still in the template: {stale}")
 
-    def test_existing_talent_weights_are_preserved(self):
-        weights = {
-            1: (20, 30, 50), 2: (20, 50, 30), 3: (25, 50, 25),
-            4: (40, 50, 10), 5: (40, 40, 20), 6: (33, 33, 33),
-            7: (10, 45, 45), 8: (20, 10, 70), 9: (33, 33, 33),
-            11: (10, 45, 45),
-        }
-        for cls, expected in weights.items():
-            with self.subTest(cls=cls):
-                self.assertEqual(tuple(int(self.settings[f"{SPEC_PREFIX}{cls}.{s}"]) for s in range(3)), expected)
+    def test_no_inline_comments_after_values(self):
+        offenders = []
+        for lineno, raw in enumerate(self.path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip().startswith("AiPlayerbot.") and "#" in value:
+                offenders.append((key.strip(), lineno))
+        self.assertEqual(offenders, [], "inline comments after values break the parser")
 
-    def test_no_standalone_bot_template_or_late_override(self):
-        self.assertFalse((ROOT / "src/plugins/playerbot/aiplayerbot.conf.dist").exists())
-        reader = (ROOT / "src/plugins/playerbot/PlayerbotAIConfig.cpp").read_text(encoding="utf-8")
-        self.assertNotIn("LoadAdditionalFile(", reader)
-        for name in ("src/plugins/CMakeLists.txt", ".github/workflows/release.yml"):
-            self.assertNotIn("aiplayerbot.conf.dist", (ROOT / name).read_text(encoding="utf-8"))
-
-    def test_build_or_install_copy_is_complete(self):
-        self.assertEqual(CONFIG.read_text(encoding="utf-8"), TEMPLATE.read_text(encoding="utf-8"))
+    def test_min_max_pairs_consistent(self):
+        def val(key):
+            values = self.entries.get(key)
+            return int(values[0][0]) if values else None
+        lo, hi = val("AiPlayerbot.RandomBotMinLevel"), val("AiPlayerbot.RandomBotMaxLevel")
+        self.assertIsNotNone(lo)
+        self.assertIsNotNone(hi)
+        self.assertLessEqual(lo, hi)
+        self.assertLessEqual(float(self.entries["AiPlayerbot.CastMinDistance"][0][0]),
+                             float(self.entries["AiPlayerbot.CastStandDistance"][0][0]))
 
 
 if __name__ == "__main__":
-    arguments = argparse.ArgumentParser(add_help=False)
-    arguments.add_argument("--config", type=Path, default=TEMPLATE)
-    options, remaining = arguments.parse_known_args()
-    CONFIG = options.config
-    unittest.main(argv=[__file__, *remaining])
+    unittest.main(verbosity=2)

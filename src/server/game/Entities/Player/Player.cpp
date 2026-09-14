@@ -915,8 +915,8 @@ void Player::Update(uint32 p_time)
     if (!IsInWorld())
         return;
 
-    // playerbot mod: drive the bot AI attached to this player (and the bots it owns)
-    if (_playerbotAI || _playerbotMgr)
+    // playerbot mod: drive the bot AI attached to this player
+    if (_botAI)
         Playerbot::OnPlayerUpdate(this, p_time);
 
     // undelivered mail

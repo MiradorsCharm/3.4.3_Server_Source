@@ -231,7 +231,7 @@ void WorldSession::SendPacket(WorldPacket const* packet, bool forced /*= false*/
     // playerbot mod: bots have no socket, hand the packet over to their AI instead
     if (_isBotSession)
     {
-        if (_player && _player->GetPlayerbotAI())
+        if (_player && _player->GetBotAI())
             Playerbot::OnBotPacketSent(_player, packet);
         return;
     }

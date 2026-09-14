@@ -4464,303 +4464,157 @@ Pvp.FactionBalance.Pct20 = 0.8
 ###################################################################################################
 # AI PLAYERBOT SETTINGS
 #
-# All AI Playerbot settings are part of worldserver.conf. No separate aiplayerbot.conf is needed.
-# When upgrading, merge this section into your existing worldserver.conf (without a new INI section)
-# and remove old bot overrides from worldserver.conf.d. Rebuilding updates the .conf.dist template,
-# never your live .conf. Restart worldserver after changing bot settings.
-# Put comments on their own lines: inline comments become part of a value and can make it invalid.
-# Negative unsigned counts/timers are clamped to zero; inverted min/max pairs are swapped.
+# The playerbot AI is a from-scratch implementation for this core. Bots are
+# real characters driven through the same server pipelines a player's client
+# drives. Change these values in worldserver.conf (never in worldserver.conf.d
+# overrides) and restart worldserver to apply them.
 #
 #    AiPlayerbot.Enabled
-#        Description: Enable the integrated AI Playerbot system (ike3/mangosbot port).
+#        Description: Master switch for the bot system.
 #        Default:     1 - (Enabled)
 #                     0 - (Disabled)
 
 AiPlayerbot.Enabled = 1
 
 #
-#    AiPlayerbot.AllowGuildBots
-#        Description: Allow players to use bots from their guild.
-#        Default:     1
+#    AiPlayerbot.Diagnostics
+#        Description: Report bots that hold a target without making progress
+#                     (one console line + one whisper to the master per bot).
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
 
-AiPlayerbot.AllowGuildBots = 1
-
-#
-#    AiPlayerbot.CommandPrefix
-#    AiPlayerbot.CommandServerPort
-#        Description: Prefix for bot chat commands and optional TCP command-server port.
-#        Important:   Leave the command server disabled unless you explicitly need it.
-#        Default:     "" - (CommandPrefix; use "!" for commands such as "!follow")
-#                     0  - (CommandServerPort; disabled)
-
-AiPlayerbot.CommandPrefix = ""
-AiPlayerbot.CommandServerPort = 0
+AiPlayerbot.Diagnostics = 1
 
 #
-#    AI timing (milliseconds, except IterationsPerTick which is a count)
-#        Description: Global cooldown, movement wait limit, action delay and max AI iterations.
-#        Default:     500  - (GlobalCooldown)
-#                     3000 - (MaxWaitForMove)
-#                     100  - (ReactDelay)
-#                     10   - (IterationsPerTick)
+#    AiPlayerbot.StallReportMs
+#        Description: How long (ms) a bot may hold a target with no progress
+#                     before it is reported.
+#        Default:     4000
 
-AiPlayerbot.GlobalCooldown = 500
-AiPlayerbot.MaxWaitForMove = 3000
-AiPlayerbot.ReactDelay = 100
-AiPlayerbot.IterationsPerTick = 10
+AiPlayerbot.StallReportMs = 4000
 
 #
-#    AI distances (yards)
-#        Description: Distances for perception, spells, grinding, looting, fleeing and following.
-#                     MeleeDistance is a stance cap measured from the target's
-#                     surface (how close a bot may plant itself), not the swing
-#                     range: the actual melee stop is computed from the core's own
-#                     swing envelope (Unit::IsWithinMeleeRange, centre-to-centre)
-#                     so the bot always stands where its swings can land.
-#        Default:     Values below match the built-in defaults.
+#    AiPlayerbot.StallReportCooldownMs
+#        Description: Minimum pause between two reports about the same bot.
+#        Default:     10000
+
+AiPlayerbot.StallReportCooldownMs = 10000
+
+#
+#    AiPlayerbot.DebugMove
+#        Description: Per-tick movement trace in the log (very verbose, do not
+#                     leave on for live servers).
+#        Default:     0 - (Disabled)
+
+AiPlayerbot.DebugMove = 0
+
+#
+#    AiPlayerbot.SightDistance
+#        Description: How far (yards) a bot considers a unit "nearby".
+#        Default:     50.0
 
 AiPlayerbot.SightDistance = 50.0
+
+#
+#    AiPlayerbot.SpellDistance
+#        Description: Generic far-enough stand-off distance (yards).
+#        Default:     25.0
+
 AiPlayerbot.SpellDistance = 25.0
-AiPlayerbot.ReactDistance = 150.0
-AiPlayerbot.GrindDistance = 100.0
-AiPlayerbot.LootDistance = 20.0
-AiPlayerbot.FleeDistance = 20.0
-AiPlayerbot.TooCloseDistance = 5.0
-AiPlayerbot.MeleeDistance = 3.0
-AiPlayerbot.FollowDistance = 1.5
-AiPlayerbot.WhisperDistance = 6000.0
-AiPlayerbot.ContactDistance = 0.5
 
 #
-#    AiPlayerbot.FleeingEnabled
-#        Description: Allow bots to flee from enemies.
-#        Default:     1
+#    AiPlayerbot.LootDistance
+#        Description: How far away (yards) a corpse is still worth walking to.
+#        Default:     25.0
 
-AiPlayerbot.FleeingEnabled = 1
-
-#
-#    Health and mana thresholds (percent)
-#        Description: Thresholds used by healing, recovery and combat decisions.
-#        Default:     Values below match the built-in defaults.
-
-AiPlayerbot.CriticalHealth = 20
-AiPlayerbot.LowHealth = 50
-AiPlayerbot.MediumHealth = 70
-AiPlayerbot.AlmostFullHealth = 85
-AiPlayerbot.LowMana = 15
-AiPlayerbot.MediumMana = 40
+AiPlayerbot.LootDistance = 25.0
 
 #
-#    Default strategies
-#        Description: Strategy changes applied on top of the class defaults. Comma-separated;
-#                     prefix a strategy with + to enable it or - to disable it.
-#        Default:     Values below match the built-in defaults.
+#    AiPlayerbot.FollowDistance
+#        Description: Distance (yards) a bot keeps behind its master.
+#        Default:     4.0
 
-AiPlayerbot.CombatStrategies = "+custom::say"
-AiPlayerbot.NonCombatStrategies = "+custom::say"
-AiPlayerbot.RandomBotCombatStrategies = "+dps,+dps assist,-threat"
-AiPlayerbot.RandomBotNonCombatStrategies = "+grind,+move random,+loot"
+AiPlayerbot.FollowDistance = 4.0
 
 #
-#    Random bot population
-#        Description: Maintain MinRandomBots..MaxRandomBots online and log them in at startup.
-#                     RandomBotJoinLfg enables random bots to join the dungeon finder.
-#        Important:   Enough characters/names must exist to reach the configured population.
-#        Default:     1   - (RandomBotAutologin, RandomBotLoginAtStartup, RandomBotJoinLfg)
-#                     50  - (MinRandomBots)
-#                     200 - (MaxRandomBots)
+#    AiPlayerbot.WanderRadius
+#        Description: Radius (yards) of a random bot's idle stroll.
+#        Default:     20.0
 
-AiPlayerbot.RandomBotAutologin = 1
-AiPlayerbot.RandomBotLoginAtStartup = 1
-AiPlayerbot.RandomBotJoinLfg = 1
-AiPlayerbot.MinRandomBots = 50
-AiPlayerbot.MaxRandomBots = 200
+AiPlayerbot.WanderRadius = 20.0
 
 #
-#    Random bot levels and equipment
-#        Description: Level bounds and probabilities (0.0..1.0) for maximum level / lower gear.
-#        Important:   RandomBotMaxLevel is capped at MaxPlayerLevel. The default 255 means use
-#                     the server limit (normally 80 for Wrath), not create level-255 bots.
-#        Default:     1    - (RandomBotMinLevel)
-#                     255  - (RandomBotMaxLevel)
-#                     0.4  - (RandomBotMaxLevelChance)
-#                     0.15 - (RandomGearLoweringChance)
+#    AiPlayerbot.MeleeStopFactor
+#        Description: Fraction of the live melee swing range a melee bot stops
+#                     at (0.8 = 20% inside the swing envelope). Range: (0.1, 0.95].
+#        Default:     0.8
+
+AiPlayerbot.MeleeStopFactor = 0.8
+
+#
+#    AiPlayerbot.CastStandDistance
+#        Description: Distance (yards) ranged/caster bots try to hold.
+#        Default:     18.0
+
+AiPlayerbot.CastStandDistance = 18.0
+
+#
+#    AiPlayerbot.CastMinDistance
+#        Description: Ranged/caster bots back off when anything comes closer
+#                     than this (yards).
+#        Default:     8.0
+
+AiPlayerbot.CastMinDistance = 8.0
+
+#
+#    AiPlayerbot.AutoAssistMaster
+#        Description: Bots join a fight their master starts (and retaliate when
+#                     attacked themselves).
+#        Default:     1 - (Enabled)
+
+AiPlayerbot.AutoAssistMaster = 1
+
+#
+#    AiPlayerbot.ReviveDelayMs
+#        Description: Dead bots resurrect themselves (in place, 50% health)
+#                     after this many milliseconds.
+#        Default:     5000
+
+AiPlayerbot.ReviveDelayMs = 5000
+
+#
+#    AiPlayerbot.RandomBotCount
+#        Description: How many random bots should be online. 0 disables the
+#                     random bot pool.
+#        Default:     0
+
+AiPlayerbot.RandomBotCount = 0
+
+#
+#    AiPlayerbot.RandomBotMinLevel / RandomBotMaxLevel
+#        Description: Level band for freshly prepared random bots.
+#        Default:     1 / 60
 
 AiPlayerbot.RandomBotMinLevel = 1
-AiPlayerbot.RandomBotMaxLevel = 255
-AiPlayerbot.RandomBotMaxLevelChance = 0.4
-AiPlayerbot.RandomGearLoweringChance = 0.15
+AiPlayerbot.RandomBotMaxLevel = 60
 
 #
-#    Random bot accounts
-#        Description: Create accounts named <RandomBotAccountPrefix><n> for generated bots.
-#        Important:   DeleteRandomBotAccounts deletes the generated accounts. Keep it at 0
-#                     during normal operation; it is not required when upgrading the server.
-#        Default:     "rndbot" - (RandomBotAccountPrefix)
-#                     50       - (RandomBotAccountCount)
-#                     0        - (DeleteRandomBotAccounts)
+#    AiPlayerbot.RandomBotUpdateInterval
+#        Description: Seconds between random bot pool audits (login/logout
+#                     bookkeeping and pool top-up).
+#        Default:     30
 
-# AccountPrefix must be nonempty and contain only ASCII letters, digits or underscores.
-# Underscores are treated literally, not as SQL wildcards, when selecting these accounts.
+AiPlayerbot.RandomBotUpdateInterval = 30
+
+#
+#    AiPlayerbot.RandomBotAccountPrefix
+#        Description: Accounts whose name starts with this prefix are treated
+#                     as bot accounts (their characters are the random pool).
+#        Default:     "rndbot"
+
 AiPlayerbot.RandomBotAccountPrefix = "rndbot"
-AiPlayerbot.RandomBotAccountCount = 50
-AiPlayerbot.DeleteRandomBotAccounts = 0
 
 #
-#    Random bot maps and teleports
-#        Description: Allowed map IDs, nearby-creature level difference and teleport distance.
-#                     Map 0 is Eastern Kingdoms, 1 Kalimdor, 530 Outland and 571 Northrend.
-#                     Use unsigned decimal IDs of non-instanced maps present in the client data.
-#                     Invalid IDs are logged/skipped; an empty valid list prevents random teleports.
-#                     Destinations are creature spawn points. Movement after spawn uses the core
-#                     MotionMaster pathfinder; missing dest-tile mmap is not treated as an error.
-#        Default:     "0,1,530,571" - (RandomBotMaps)
-#                     3             - (RandomBotTeleLevel)
-#                     1000          - (RandomBotTeleportDistance, yards)
-
-AiPlayerbot.RandomBotMaps = "0,1,530,571"
-AiPlayerbot.RandomBotTeleLevel = 3
-AiPlayerbot.RandomBotTeleportDistance = 1000
-
-#
-#    Random bot items and spells
-#        Description: Comma-separated IDs of items to retain and spells to learn on randomization.
-#        Default:     "6948,5175,5176,5177,5178" - (RandomBotQuestItems: hearthstone and totems)
-#                     "54197"                    - (RandomBotSpellIds: cold weather flying)
-
-AiPlayerbot.RandomBotQuestItems = "6948,5175,5176,5177,5178"
-AiPlayerbot.RandomBotSpellIds = "54197"
-
-#
-#    Random bot scheduling (seconds, except Min/MaxRandomBotsPerInterval which are counts)
-#        Description: Manager update interval, population-change interval, time in the world,
-#                     randomization/revival delays, bots processed per update and price changes.
-#        Important:   MaxRandomRandomizeTime and MaxRandomReviveTime are the historical key names;
-#                     do not insert "Bot" into those two names.
-#                     RandomBotUpdateInterval must be 1..4294967 seconds; invalid values use 60.
-#                     A zero processing budget pauses processing. Start with a small budget when
-#                     testing large populations: randomization still runs on the world thread.
-#        Default:     Values below match the built-in defaults.
-
-AiPlayerbot.RandomBotUpdateInterval = 60
-AiPlayerbot.RandomBotCountChangeMinInterval = 86400
-AiPlayerbot.RandomBotCountChangeMaxInterval = 259200
-AiPlayerbot.MinRandomBotInWorldTime = 86400
-AiPlayerbot.MaxRandomBotInWorldTime = 1209600
-AiPlayerbot.MinRandomBotRandomizeTime = 7200
-AiPlayerbot.MaxRandomRandomizeTime = 1209600
-AiPlayerbot.MinRandomBotReviveTime = 60
-AiPlayerbot.MaxRandomReviveTime = 300
-AiPlayerbot.MinRandomBotsPerInterval = 50
-AiPlayerbot.MaxRandomBotsPerInterval = 100
-AiPlayerbot.MinRandomBotsPriceChangeInterval = 7200
-AiPlayerbot.MaxRandomBotsPriceChangeInterval = 172800
-
-#
-#    Random bot guilds and tasks
-#        Description: Number of generated guilds, task-system switch and timing bounds (seconds).
-#        Important:   DeleteRandomBotGuilds deletes generated guilds. Keep it at 0 normally.
-#        Default:     Values below match the built-in defaults.
-
-AiPlayerbot.RandomBotGuildCount = 50
-AiPlayerbot.DeleteRandomBotGuilds = 0
-AiPlayerbot.EnableGuildTasks = 1
-AiPlayerbot.MinGuildTaskChangeTime = 172800
-AiPlayerbot.MaxGuildTaskChangeTime = 432000
-AiPlayerbot.MinGuildTaskAdvertisementTime = 28800
-AiPlayerbot.MaxGuildTaskAdvertisementTime = 345600
-AiPlayerbot.MinGuildTaskRewardTime = 60
-AiPlayerbot.MaxGuildTaskRewardTime = 600
-
-#
-#    AiPlayerbot.RandomClassSpecProbability.<class>.<spec>
-#        Description: Relative weights for the three talent trees (spec 0, 1, 2) of each Wrath class.
-#                     Class IDs 0, 10, 12, 13 and 14 are not Wrath classes and are not read.
-#                     Negative weights use 0; all three zero weights fall back to equal chances.
-#        Default:     Preserves the original bot template's weights; Death Knight uses 33/33/33.
-#
-#    Warrior (Arms / Fury / Protection)
-AiPlayerbot.RandomClassSpecProbability.1.0 = 20
-AiPlayerbot.RandomClassSpecProbability.1.1 = 30
-AiPlayerbot.RandomClassSpecProbability.1.2 = 50
-#    Paladin (Holy / Protection / Retribution)
-AiPlayerbot.RandomClassSpecProbability.2.0 = 20
-AiPlayerbot.RandomClassSpecProbability.2.1 = 50
-AiPlayerbot.RandomClassSpecProbability.2.2 = 30
-#    Hunter (Beast Mastery / Marksmanship / Survival)
-AiPlayerbot.RandomClassSpecProbability.3.0 = 25
-AiPlayerbot.RandomClassSpecProbability.3.1 = 50
-AiPlayerbot.RandomClassSpecProbability.3.2 = 25
-#    Rogue (Assassination / Combat / Subtlety)
-AiPlayerbot.RandomClassSpecProbability.4.0 = 40
-AiPlayerbot.RandomClassSpecProbability.4.1 = 50
-AiPlayerbot.RandomClassSpecProbability.4.2 = 10
-#    Priest (Discipline / Holy / Shadow)
-AiPlayerbot.RandomClassSpecProbability.5.0 = 40
-AiPlayerbot.RandomClassSpecProbability.5.1 = 40
-AiPlayerbot.RandomClassSpecProbability.5.2 = 20
-#    Death Knight (Blood / Frost / Unholy)
-AiPlayerbot.RandomClassSpecProbability.6.0 = 33
-AiPlayerbot.RandomClassSpecProbability.6.1 = 33
-AiPlayerbot.RandomClassSpecProbability.6.2 = 33
-#    Shaman (Elemental / Enhancement / Restoration)
-AiPlayerbot.RandomClassSpecProbability.7.0 = 10
-AiPlayerbot.RandomClassSpecProbability.7.1 = 45
-AiPlayerbot.RandomClassSpecProbability.7.2 = 45
-#    Mage (Arcane / Fire / Frost)
-AiPlayerbot.RandomClassSpecProbability.8.0 = 20
-AiPlayerbot.RandomClassSpecProbability.8.1 = 10
-AiPlayerbot.RandomClassSpecProbability.8.2 = 70
-#    Warlock (Affliction / Demonology / Destruction)
-AiPlayerbot.RandomClassSpecProbability.9.0 = 33
-AiPlayerbot.RandomClassSpecProbability.9.1 = 33
-AiPlayerbot.RandomClassSpecProbability.9.2 = 33
-#    Druid (Balance / Feral Combat / Restoration)
-AiPlayerbot.RandomClassSpecProbability.11.0 = 10
-AiPlayerbot.RandomClassSpecProbability.11.1 = 45
-AiPlayerbot.RandomClassSpecProbability.11.2 = 45
-
-#
-#    AI diagnostics and random-change multiplier
-#        Description: Limit AI detail logging to grouped bots, log values each tick, and scale
-#                     random AI changes. RandomChangeMultiplier must be finite and greater than zero.
-#                     DebugCombat watches every bot that has a live target: if it stops making
-#                     progress for four seconds the server prints the one line that says which
-#                     gate is holding the bot (movement, swing range, facing, a blocking cast,
-#                     teleport, disarm/pacify), then puts the bot back into a state where it can
-#                     act again. Rate limited to one line per bot per minute and one line per
-#                     fifteen seconds overall. 2 additionally logs a full snapshot once per second
-#                     per bot at debug level (needs Logger.playerbot=2,Console Server).
-#                     Whisper a bot "combat debug" for the same line on demand, any setting.
-#        Default:     1   - (LogInGroupOnly)
-#                     0   - (LogValuesPerTick)
-#                     1   - (DebugCombat)
-#                     1.0 - (RandomChangeMultiplier)
-
-AiPlayerbot.LogInGroupOnly = 1
-AiPlayerbot.LogValuesPerTick = 0
-AiPlayerbot.DebugCombat = 1
-AiPlayerbot.RandomChangeMultiplier = 1.0
-
-#
-#    AhBot pricing helper (not the core AuctionHouseBot.* system)
-#        Description: PriceMultiplier, PriceQualityMultiplier and DefaultMinPrice (copper) affect
-#                     item pricing. Multipliers must be finite and positive (invalid values use 1.0).
-#                     MaxItemLevel, MaxRequiredLevel and IgnoreItems filter random guild-task items;
-#                     a maximum of 0 means unlimited. Prices are capped to signed 32-bit copper.
-#                     Enabled and UnderPriceProbability are compatibility-only in this minimal port;
-#                     these options do not enable a full auction-house bot.
-#        Default:     Values below match the built-in defaults.
-
-AhBot.Enabled = 0
-AhBot.PriceMultiplier = 1.0
-AhBot.PriceQualityMultiplier = 1.0
-AhBot.DefaultMinPrice = 0
-AhBot.MaxItemLevel = 0
-AhBot.MaxRequiredLevel = 0
-AhBot.UnderPriceProbability = 0.0
-AhBot.IgnoreItems = ""
-
-#
+###################################################################################################
 ###################################################################################################
 ############################################################################
