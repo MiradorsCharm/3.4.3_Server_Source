@@ -20,6 +20,13 @@
 #include "Groups/Group.h"
 #include "Entities/Pet/Pet.h"
 #include "Spells/Auras/SpellAuraEffects.h"
+#include "CombatDiag.h"
+#include "Movement/MotionMaster.h"
+#include "Movement/Spline/MoveSpline.h"
+#include <atomic>
+#include <cmath>
+#include "StringFormat.h"
+#include "Time/GameTime.h"
 
 using namespace ai;
 using namespace std;
@@ -151,6 +158,11 @@ PlayerbotAI::~PlayerbotAI()
 
 void PlayerbotAI::UpdateAI(uint32 elapsed)
 {
+    // Before anything below can bail out: a bot frozen by a stuck teleport or a
+    // stale cast is exactly what needs reporting, and the watchdog has to see the
+    // same elapsed time the AI is throttled by.
+    UpdateCombatDiagnostics(elapsed);
+
     if (bot->IsBeingTeleported())
         return;
 
@@ -172,6 +184,273 @@ void PlayerbotAI::UpdateAI(uint32 elapsed)
     }
 
     PlayerbotAIBase::UpdateAI(elapsed);
+}
+
+// --------------------------------------------------------------------------------
+// Combat diagnostics
+//
+// "The bots won't attack" is never one bug: a bot needs a target, an attack state,
+// a movement generator that actually relocates it, the core's 3D swing-range test,
+// a 120 degree facing arc and an expired swing timer, and every one of those is
+// owned by a different subsystem. This block reads all of them once per tick, and
+// when a bot stops making progress it says which one is holding the bot back
+// instead of letting the bot stand in its attack animation forever.
+// --------------------------------------------------------------------------------
+
+static char const* BotSwingErrorText(Player* bot)
+{
+    // SetAttackSwingError() normally only reaches a client (SMSG_ATTACK_SWING_ERROR);
+    // a bot session has none, so the reason the core refused the swing is otherwise
+    // invisible. Exposed through Player::GetAttackSwingError() for exactly this.
+    Optional<AttackSwingErr> err = bot->GetAttackSwingError();
+    if (!err)
+        return "";
+
+    switch (*err)
+    {
+        case AttackSwingErr::NotInRange: return "NotInRange";
+        case AttackSwingErr::BadFacing:  return "BadFacing";
+        case AttackSwingErr::CantAttack: return "CantAttack";
+        case AttackSwingErr::DeadTarget: return "DeadTarget";
+    }
+    return "";
+}
+
+static bool IsBotLocomotionGenerator(MovementGeneratorType type)
+{
+    return type != IDLE_MOTION_TYPE && type != EFFECT_MOTION_TYPE;
+}
+
+// Mirrors MovementAction::IsMovingAllowed(): "not moving because I may not move"
+// and "not moving because my chase is going nowhere" need different fixes, so the
+// snapshot keeps them apart.
+static bool BotMayStartMoving(Player* bot)
+{
+    if (bot->IsFrozen() || bot->IsPolymorphed() ||
+            (bot->isDead() && !bot->HasPlayerFlag(PLAYER_FLAGS_GHOST)) ||
+            bot->IsBeingTeleported() ||
+            bot->HasUnitState(UNIT_STATE_ROOT) ||
+            bot->HasAuraType(SPELL_AURA_MOD_CONFUSE) || bot->IsCharmed() ||
+            bot->HasAuraType(SPELL_AURA_MOD_STUN) || bot->IsFlying())
+        return false;
+
+    return bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FLIGHT_MOTION_TYPE;
+}
+
+static uint32 BotBlockingSpellId(Player* bot)
+{
+    for (uint32 type = 0; type < CURRENT_MAX_SPELL; ++type)
+        if (Spell* spell = bot->GetCurrentSpell(type))
+            return spell->GetSpellInfo()->Id;
+
+    return 0;
+}
+
+CombatSnapshot PlayerbotAI::CaptureCombatSnapshot()
+{
+    CombatSnapshot snap;
+    if (!bot || !bot->IsInWorld())
+        return snap;
+
+    Unit* target = aiObjectContext ? aiObjectContext->GetValue<Unit*>("current target")->Get() : nullptr;
+    if (!target)
+        target = bot->GetVictim();
+
+    snap.alive = bot->IsAlive();
+    snap.hasTarget = target != nullptr;
+    snap.targetAlive = target && target->IsAlive();
+
+    snap.attackState = bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING);
+    snap.swingReady = bot->isAttackReady(BASE_ATTACK);
+    snap.swingError = BotSwingErrorText(bot);
+    snap.mounted = bot->IsMounted();
+    snap.flying = bot->IsFlying();
+    snap.pacified = bot->HasUnitFlag(UNIT_FLAG_PACIFIED);
+    snap.disarmed = bot->HasUnitFlag(UNIT_FLAG_DISARMED);
+    snap.hasMeleeWeapon = bot->GetWeaponForAttack(BASE_ATTACK, true) != nullptr;
+    snap.movementDisabled = bot->HasUnitState(UNIT_STATE_NOT_MOVE)
+            || bot->HasAuraType(SPELL_AURA_MOD_CONFUSE) || bot->IsCharmed();
+    snap.casting = bot->HasUnitState(UNIT_STATE_CASTING);
+    snap.movementBlockedByCast = bot->IsMovementPreventedByCasting();
+    snap.blockingSpell = BotBlockingSpellId(bot);
+    snap.teleported = bot->IsBeingTeleported();
+    snap.runSpeed = bot->GetSpeed(MOVE_RUN);
+    snap.movingNow = !bot->movespline->Finalized()
+            || IsBotLocomotionGenerator(bot->GetMotionMaster()->GetCurrentMovementGeneratorType());
+    snap.canMoveNow = BotMayStartMoving(bot);
+    snap.stallMs = combatStallMs;
+
+    if (currentEngine)
+        snap.trace = currentEngine->GetLastAction();
+
+    if (target)
+    {
+        snap.distance3d = bot->GetDistance(target);
+        // absolute: a bot standing above its target is the same trap as one below
+        snap.zGap = std::fabs(bot->GetPositionZ() - target->GetPositionZ());
+        snap.meleeRange = bot->GetMeleeRange(target);
+        // Not IsWithinDist2d/GetDistance2d: this is the exact call the core makes
+        // before it lets a swing land, so the bot and the core can never disagree
+        // about "in range" again.
+        snap.inMeleeRange = bot->IsWithinMeleeRange(target);
+        snap.sameMap = bot->IsInMap(target);
+        snap.hasLOS = bot->IsWithinLOSInMap(target);
+        snap.inArc = bot->HasInArc(2.0f * static_cast<float>(M_PI) / 3.0f, target);
+    }
+
+    return snap;
+}
+
+void PlayerbotAI::UpdateCombatDiagnostics(uint32 elapsed)
+{
+    if (sPlayerbotAIConfig.debugCombat == 0 || !bot || !aiObjectContext)
+        return;
+
+    if (combatReportCooldownMs > elapsed)
+        combatReportCooldownMs -= elapsed;
+    else
+        combatReportCooldownMs = 0;
+
+    Unit* target = aiObjectContext->GetValue<Unit*>("current target")->Get();
+    if (!target)
+        target = bot->GetVictim();
+
+    if (!target || !target->IsAlive() || !bot->IsAlive() || bot->IsBeingTeleported() || !bot->IsInMap(target))
+    {
+        combatStallMs = 0;
+        combatBestDistance = 0.0f;
+        combatBestHealth = 0;
+        combatWatchVictim.Clear();
+        return;
+    }
+
+    float const distance = bot->GetDistance(target);
+    uint32 const health = target->GetHealth();
+
+    if (combatWatchVictim != target->GetGUID())
+    {
+        combatWatchVictim = target->GetGUID();
+        combatBestDistance = distance;
+        combatBestHealth = health;
+        combatStallMs = 0;
+        return;
+    }
+
+    // Progress is either closing the gap or hurting the victim. Anything else that
+    // looked like fighting - circling, a spline that goes nowhere - is a stall.
+    if (distance <= combatBestDistance - 0.75f || health < combatBestHealth)
+    {
+        combatBestDistance = distance;
+        combatBestHealth = health;
+        combatStallMs = 0;
+        return;
+    }
+
+    combatStallMs += elapsed;
+
+    if (sPlayerbotAIConfig.debugCombat >= 2)
+    {
+        if (combatDebugTickMs > 1000)
+        {
+            combatDebugTickMs = 0;
+            TC_LOG_DEBUG("playerbot", "Combat state of {}: {}", bot->GetName(),
+                    FormatCombatSnapshot(CaptureCombatSnapshot()));
+        }
+        else
+            combatDebugTickMs += elapsed;
+    }
+
+    CombatSnapshot snap = CaptureCombatSnapshot();
+    CombatStall stall = EvaluateCombatStall(snap);
+    if (!stall.report)
+        return;
+
+    // One word per bot per minute at most...
+    combatReportCooldownMs = 60 * 1000;
+
+    // ...and one console line per fifteen seconds for the whole bot population.
+    // Without the second limit a realm with two hundred confused bots replaces the
+    // log nobody could read with a longer one.
+    static std::atomic<time_t> lastReportTime{ 0 };
+    static std::atomic<uint32> suppressed{ 0 };
+
+    time_t const now = GameTime::GetGameTime();
+    if (now - lastReportTime.load() >= 15)
+    {
+        lastReportTime = now;
+        uint32 const dropped = suppressed.exchange(0);
+
+        TC_LOG_ERROR("playerbot", "Bot {} is locked onto {} and not fighting: {} | {}{}",
+                bot->GetName(), target->GetName(), stall.reason, FormatCombatSnapshot(snap),
+                dropped ? Trinity::StringFormat(" (+{} further stall report(s) suppressed to keep the console readable)", dropped) : "");
+    }
+    else
+        ++suppressed;
+
+    // A player who ordered this fight deserves to hear why it is not happening;
+    // random bots have no master and stay quiet.
+    if (master && master->IsInWorld() && !master->GetPlayerbotAI())
+    {
+        ostringstream out;
+        out << "I cannot fight " << target->GetName() << ": " << stall.reason;
+        TellMaster(out);
+    }
+
+    switch (stall.action)
+    {
+        case CombatStallAction::ClearCast:
+            // The blocking cast holds *both* the movement generator (see
+            // Unit::IsMovementPreventedByCasting) and every swing (DoMeleeAttackIfReady
+            // returns at its casting check). Nothing else clears a cast a client
+            // would have cancelled, because there is no client.
+            bot->CastStop();
+            bot->InterruptSpell(CURRENT_MELEE_SPELL);
+            InterruptSpell();
+            break;
+        case CombatStallAction::RetryMove:
+            // Drop the wedged movement so the next tick starts from scratch; a stale
+            // generator that is "moving" without relocating the bot is otherwise
+            // permanent.
+            bot->GetMotionMaster()->Clear();
+            bot->StopMoving();
+            break;
+        case CombatStallAction::DropTarget:
+            bot->AttackStop();
+            aiObjectContext->GetValue<Unit*>("old target")->Set(target);
+            aiObjectContext->GetValue<Unit*>("current target")->Set(nullptr);
+            break;
+        default:
+            break;
+    }
+
+    combatStallMs = 0;
+}
+
+std::string PlayerbotAI::FormatCombatStatus()
+{
+    CombatSnapshot snap = CaptureCombatSnapshot();
+
+    // The verdict in EvaluateCombatStall() is gated on a stall window so a normal
+    // chase is never reported; an operator asking right now means "tell me now".
+    snap.stallMs = 10000;
+
+    CombatStall stall = EvaluateCombatStall(snap);
+
+    ostringstream out;
+    out << (stall.report ? stall.reason : "nothing is blocking this bot right now")
+        << " | " << FormatCombatSnapshot(snap)
+        << " | aiDelay=" << nextAICheckDelay
+        << " ms, iterationsPerTick=" << sPlayerbotAIConfig.iterationsPerTick
+        << " | melee=" << sPlayerbotAIConfig.meleeDistance
+        << " contact=" << sPlayerbotAIConfig.contactDistance
+        << " spell=" << sPlayerbotAIConfig.spellDistance
+        << " react=" << sPlayerbotAIConfig.reactDistance
+        << " sight=" << sPlayerbotAIConfig.sightDistance;
+
+    if (currentEngine)
+        out << " | strategies: " << currentEngine->ListStrategies();
+
+    return out.str();
 }
 
 void PlayerbotAI::UpdateAIInternal(uint32 elapsed)

@@ -87,16 +87,16 @@ void PlayerbotFactory::Prepare()
 
 void PlayerbotFactory::Randomize(bool incremental)
 {
-    TC_LOG_INFO("playerbot",  "Preparing to randomize...");
+    TC_LOG_DEBUG("playerbot",  "Preparing to randomize...");
     Prepare();
 
-    TC_LOG_INFO("playerbot",  "Resetting player...");
+    TC_LOG_DEBUG("playerbot",  "Resetting player...");
     bot->ResetTalents(true);
     ClearSpells();
     ClearInventory();
     bot->SaveToDB();
 
-    TC_LOG_INFO("playerbot",  "Initializing quests...");
+    TC_LOG_DEBUG("playerbot",  "Initializing quests...");
     InitQuests();
     // quest rewards boost bot level, so reduce back
     bot->GiveLevel(uint8(level));
@@ -105,60 +105,66 @@ void PlayerbotFactory::Randomize(bool incremental)
     CancelAuras();
     bot->SaveToDB();
 
-    TC_LOG_INFO("playerbot",  "Initializing spells (step 1)...");
+    TC_LOG_DEBUG("playerbot",  "Initializing spells (step 1)...");
     InitAvailableSpells();
 
-    TC_LOG_INFO("playerbot",  "Initializing skills (step 1)...");
+    TC_LOG_DEBUG("playerbot",  "Initializing skills (step 1)...");
     InitSkills();
     InitTradeSkills();
 
-    TC_LOG_INFO("playerbot",  "Initializing talents...");
+    TC_LOG_DEBUG("playerbot",  "Initializing talents...");
     InitTalents();
 
-    TC_LOG_INFO("playerbot",  "Initializing spells (step 2)...");
+    TC_LOG_DEBUG("playerbot",  "Initializing spells (step 2)...");
     InitAvailableSpells();
     InitSpecialSpells();
 
-    TC_LOG_INFO("playerbot",  "Initializing mounts...");
+    TC_LOG_DEBUG("playerbot",  "Initializing mounts...");
     InitMounts();
 
-    TC_LOG_INFO("playerbot",  "Initializing skills (step 2)...");
+    TC_LOG_DEBUG("playerbot",  "Initializing skills (step 2)...");
     UpdateTradeSkills();
     bot->SaveToDB();
 
-    TC_LOG_INFO("playerbot",  "Initializing equipmemt...");
+    TC_LOG_DEBUG("playerbot",  "Initializing equipmemt...");
     InitEquipment(incremental);
 
-    TC_LOG_INFO("playerbot",  "Initializing bags...");
+    TC_LOG_DEBUG("playerbot",  "Initializing bags...");
     InitBags();
 
-    TC_LOG_INFO("playerbot",  "Initializing ammo...");
+    TC_LOG_DEBUG("playerbot",  "Initializing ammo...");
     InitAmmo();
 
-    TC_LOG_INFO("playerbot",  "Initializing food...");
+    TC_LOG_DEBUG("playerbot",  "Initializing food...");
     InitFood();
 
-    TC_LOG_INFO("playerbot",  "Initializing potions...");
+    TC_LOG_DEBUG("playerbot",  "Initializing potions...");
     InitPotions();
 
-    TC_LOG_INFO("playerbot",  "Initializing second equipment set...");
+    TC_LOG_DEBUG("playerbot",  "Initializing second equipment set...");
     InitSecondEquipmentSet();
 
-    TC_LOG_INFO("playerbot",  "Initializing inventory...");
+    TC_LOG_DEBUG("playerbot",  "Initializing inventory...");
     InitInventory();
 
-    TC_LOG_INFO("playerbot",  "Initializing glyphs...");
+    TC_LOG_DEBUG("playerbot",  "Initializing glyphs...");
     InitGlyphs();
 
-    TC_LOG_INFO("playerbot",  "Initializing guilds...");
+    TC_LOG_DEBUG("playerbot",  "Initializing guilds...");
     InitGuild();
 
-    TC_LOG_INFO("playerbot",  "Initializing pet...");
+    TC_LOG_DEBUG("playerbot",  "Initializing pet...");
     InitPet();
 
-    TC_LOG_INFO("playerbot",  "Saving to DB...");
+    TC_LOG_DEBUG("playerbot",  "Saving to DB...");
     bot->SetMoney(urand(level * 1000, level * 5 * 1000));
     bot->SaveToDB();
+
+    // One INFO line for the whole pass instead of twenty per bot: "did the factory
+    // run for this bot" is the question the step logging exists to answer, and with
+    // a few hundred random bots twenty lines each is what made the console unusable.
+    TC_LOG_INFO("playerbot", "Randomized bot {} to level {}{}", bot->GetName(), bot->GetLevel(),
+            incremental ? " (incremental)" : "");
 }
 
 void PlayerbotFactory::InitPet()

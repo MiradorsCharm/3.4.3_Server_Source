@@ -56,7 +56,10 @@ class PlayerbotSafetyTest(unittest.TestCase):
         blocks["REFRESH"] = function(MANAGER, "void RandomPlayerbotMgr::Refresh(")
         blocks["TELEPORT"] = function(MANAGER, "void RandomPlayerbotMgr::RandomTeleport(Player* bot, vector<WorldLocation>")
         blocks["TELEPORT_LEVEL_GUARD"] = source_slice(
-            MANAGER, "void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)", '    TC_LOG_INFO("playerbot",  "Preparing location')
+            MANAGER, "void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)",
+            # per-bot "Preparing location..." is debug-level now (see the console-noise
+            # note in playerbot_combat_test.py); the slice just needs its end marker
+            '    TC_LOG_DEBUG("playerbot",  "Preparing location')
         blocks["RESTORE_LEVEL"] = source_slice(FACTORY, "    // quest rewards boost bot level", "    ClearInventory();")
         blocks["BUDGET"] = source_slice(
             MANAGER, "    uint32 randomBotsPerInterval =", "    // processTicks was initialised")

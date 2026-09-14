@@ -26,11 +26,6 @@ class RandomPlayerbotFactory
 	private:
         string CreateRandomBotName();
         static string CreateRandomGuildName();
-        // Top the character/guild name pools up to the configured population
-        // so operators never have to hand-write hundreds of names.
-        static void EnsureNamePool();
-        static void EnsureGuildNamePool();
-
     private:
         uint32 accountId;
         static map<uint8, vector<uint8> > availableRaces;

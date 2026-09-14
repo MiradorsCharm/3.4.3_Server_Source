@@ -24,6 +24,20 @@ namespace ai
         bool IsMovingAllowed(Unit* target);
         bool IsMovingAllowed(uint32 mapId, float x, float y, float z);
         bool IsMovingAllowed();
+
+        // "Am I standing where a swing can land?" - asked of the core, not of the
+        // AI's own thresholds. Unit::DoMeleeAttackIfReady() gates every swing on
+        // Unit::IsWithinMeleeRange(), which is 3D and combat-reach based, while the
+        // bot's "distance" value is 2D. Those two disagree on slopes, ledges and
+        // boats, and a bot that trusts the 2D number stops walking exactly where it
+        // still cannot hit anything: it stands in its attack animation and looks
+        // broken. Everything melee in the plugin goes through these two.
+        bool IsInMeleeRange(Unit* target) const;
+        float GetMeleeApproachDistance(Unit* target) const;
+        // Starts (or keeps) walking to the melee spot. False means the bot cannot
+        // close the distance at all right now, which is a different failure from
+        // "still on the way" and must not be retried blindly.
+        bool ApproachForMelee(Unit* target);
         bool Flee(Unit *target);
 
     protected:

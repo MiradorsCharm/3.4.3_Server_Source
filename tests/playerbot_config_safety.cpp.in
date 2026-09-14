@@ -29,6 +29,7 @@ int warnings = 0;
 template<typename... T> void Warn(T const&...) { ++warnings; }
 template<typename... T> void Log(T const&...) { }
 #define TC_LOG_ERROR(...) Warn(__VA_ARGS__)
+#define TC_LOG_WARN(...) Warn(__VA_ARGS__)
 #define TC_LOG_INFO(...) Log(__VA_ARGS__)
 #define TC_LOG_DEBUG(...) Log(__VA_ARGS__)
 uint32 urand(uint32 lo, uint32 hi) { CHECK(lo <= hi); return lo; }

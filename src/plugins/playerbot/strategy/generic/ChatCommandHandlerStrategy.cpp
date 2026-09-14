@@ -144,6 +144,7 @@ ChatCommandHandlerStrategy::ChatCommandHandlerStrategy(PlayerbotAI* ai) : PassTr
     supported.push_back("leave");
     supported.push_back("reputation");
     supported.push_back("log");
+    supported.push_back("combat debug");
     supported.push_back("los");
     supported.push_back("drop");
     supported.push_back("ll");

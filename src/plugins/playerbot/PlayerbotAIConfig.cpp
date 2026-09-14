@@ -366,6 +366,14 @@ bool PlayerbotAIConfig::Initialize()
     randomBotJoinLfg = config->GetBoolDefault("AiPlayerbot.RandomBotJoinLfg", true);
     logInGroupOnly = config->GetBoolDefault("AiPlayerbot.LogInGroupOnly", true);
     logValuesPerTick = config->GetBoolDefault("AiPlayerbot.LogValuesPerTick", false);
+    debugCombat = uint32(std::max(0, config->GetIntDefault("AiPlayerbot.DebugCombat", 1)));
+    if (debugCombat > 2)
+    {
+        // An out-of-range value is a typo, not a request to log every tick of every
+        // bot on the realm; clamp and say so (WARN, not ERROR: it is self-correcting).
+        TC_LOG_WARN("playerbot", "PlayerbotAIConfig: AiPlayerbot.DebugCombat ({}) is above 2; using 2", debugCombat);
+        debugCombat = 2;
+    }
     fleeingEnabled = config->GetBoolDefault("AiPlayerbot.FleeingEnabled", true);
     randomBotMinLevel = uint32(std::max(0, config->GetIntDefault("AiPlayerbot.RandomBotMinLevel", 1)));
     randomBotMaxLevel = uint32(std::max(0, config->GetIntDefault("AiPlayerbot.RandomBotMaxLevel", 255)));

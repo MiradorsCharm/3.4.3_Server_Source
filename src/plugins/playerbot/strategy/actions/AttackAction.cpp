@@ -128,12 +128,39 @@ bool AttackAction::Attack(Unit* target)
         }
     }
 
+    // Starting the swing is not starting the fight. The core only lets a melee hit
+    // land inside Unit::IsWithinMeleeRange() (3D and combat-reach based), and until
+    // this patch nothing at all was obliged to close that gap: the "enemy out of
+    // melee" trigger pushed "reach melee" at a *lower* priority than the attack
+    // action, which returned true every tick, so a bot that was out of reach (or
+    // that the 2D distance value claimed was in reach) kept its attack state, kept
+    // claiming success, and never swung. That is the "they just stand there doing
+    // the attack animation" report. The order that engages therefore also walks,
+    // and a bot that provably cannot walk says so instead of posing forever.
+    ai->ChangeEngine(BOT_STATE_COMBAT);
+
+    if (!IsInMeleeRange(target) && !ai->IsRanged(bot))
+    {
+        if (!ApproachForMelee(target))
+        {
+            if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                bot->AttackStop();
+
+            if (verbose)
+            {
+                ostringstream out;
+                out << "I cannot get to " << target->GetName();
+                ai->TellMaster(out);
+            }
+            return false;
+        }
+    }
+
     // Unit::Attack is a no-op when the same melee swing is already running,
     // but skip the call entirely so we never spam AttackStart packets.
     if (bot->GetVictim() != target || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
         bot->Attack(target, true);
 
-    ai->ChangeEngine(BOT_STATE_COMBAT);
     return true;
 }
 

@@ -15,6 +15,7 @@ namespace ai
             creators["rep"] = &ChatTriggerContext::reputation;
             creators["reputation"] = &ChatTriggerContext::reputation;
             creators["log"] = &ChatTriggerContext::log;
+            creators["combat debug"] = &ChatTriggerContext::combat_debug;
             creators["los"] = &ChatTriggerContext::los;
             creators["drop"] = &ChatTriggerContext::drop;
             creators["q"] = &ChatTriggerContext::q;
@@ -133,6 +134,7 @@ namespace ai
         static Trigger* leave(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "leave"); }
         static Trigger* reputation(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "reputation"); }
         static Trigger* log(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "log"); }
+        static Trigger* combat_debug(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "combat debug"); }
         static Trigger* los(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "los"); }
         static Trigger* loot_all(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "add all loot"); }
         static Trigger* release(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "release"); }
