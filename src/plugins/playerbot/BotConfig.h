@@ -53,6 +53,11 @@ public:
     uint32 EatDrinkPct = 50;         // bots eat/drink when below this % (out of combat)
     bool Grind = true;               // random bots fight nearby mobs while wandering
 
+    /// Dungeon / raid mechanic awareness.
+    bool AvoidGroundHazards = true;  // step out of hostile ground effects (fire, Defile, ...)
+    float HazardSafetyMargin = 2.0f; // extra yards kept clear beyond a hazard's radius
+    bool InterruptCasts = true;      // interrupt dangerous boss/trash casts when able
+
     /// Random bot pool.
     uint32 RandomBotCount = 0;       // how many random bots should be online (0 = feature off)
     uint32 RandomBotMinLevel = 1;

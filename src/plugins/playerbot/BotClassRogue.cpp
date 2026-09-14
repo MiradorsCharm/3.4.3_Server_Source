@@ -30,6 +30,11 @@ class BotClassRogueAI : public BotClassAI
 public:
     explicit BotClassRogueAI(BotAI* ai) : BotClassAI(ai) { }
 
+    std::vector<uint32> GetInterruptSpells() const override
+    {
+        return { std::begin(KICK), std::end(KICK) };
+    }
+
     void CombatTick(BotAI& ai) override
     {
         Player* bot = ai.GetBot();
@@ -43,10 +48,8 @@ public:
         if (bot->GetHealthPct() < 15.0f && CastOnSelf(Rank(VANISH)))
             return;
 
-        // interrupt the victim when it starts a hard cast
-        if (victim->IsNonMeleeSpellCast(false))
-            if (CastOnVictim(Rank(KICK)))
-                return;
+        // Interrupts (Kick) are handled centrally by BotCombat's dungeon/raid
+        // interrupt pass via GetInterruptSpells().
 
         // upkeep: slice and dice once we have points and it fell off
         if (!SelfHasAura(Rank(SLICE_AND_DICE)))

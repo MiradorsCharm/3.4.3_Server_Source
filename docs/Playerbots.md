@@ -324,14 +324,69 @@ takes a stable formation slot in an arc behind the master
 (`BotMovement::Follow` gains an angle offset; `BotAI` derives the slot from
 the bot's GUID).
 
+## 11. Dungeon / raid mechanic awareness (2026-09-14)
+
+Bots now read the floor and react to two of the mechanics a real player is
+expected to handle: **standing in the fire** and **letting a boss finish a
+dangerous cast**.
+
+**`BotHazards` (new module, `BotHazards.{h,cpp}`).** Owned by `BotAI`, it is
+the bot's "eyes on the floor". Once per tick (the expensive grid sweep is
+throttled to ~250 ms; the "am I standing in it?" test runs every tick) it
+scans the grid around the bot for hostile ground effects and tracks each as a
+circle (`BotHazard{center, radius, source, spellId}`):
+
+* **What it looks for.** Both kinds of ground spell this core uses -
+  `AreaTrigger` (modern "get out of the fire": Defile, flame patches, ...)
+  and `DynamicObject` (classic persistent-area spells: Rain of Fire,
+  Blizzard, Death and Decay, ...). Both are grid objects, gathered in one
+  `Cell::VisitGridObjects` sweep with a
+  `GRID_MAP_TYPE_MASK_AREATRIGGER | GRID_MAP_TYPE_MASK_DYNAMICOBJECT` searcher.
+* **What counts as harmful.** The spell is inspected, not hardcoded: it must
+  be non-positive and either deal (periodic) damage or apply a damaging /
+  controlling aura (stun, fear, root, silence, ...). Friendly/own zones
+  (Consecration from a party pal, Healing Rain) are ignored. Polygon area
+  triggers are approximated by their bounding radius - the conservative,
+  always-safe choice - plus a configurable safety margin.
+* **What it offers.** `InDanger()`, `IsSpotDangerous()`, `IsPathDangerous()`
+  (segment sampled every ~2 yd so no circle slips between samples), and
+  `FindSafeSpot()` which fans out in rings of directions using
+  `GetFirstCollisionPosition` (so the escape point is reachable and never
+  through a wall) and prefers the spot closest to the current victim - a melee
+  bot sidesteps rather than sprinting out of the fight.
+
+**Integration.**
+
+* **`BotAI::UpdateHazardAvoidance`** runs *first* each tick, ahead of the
+  combat/loot/follow brain: standing in fire kills faster than any rotation
+  helps, so dodging preempts everything and owns movement for that tick. It
+  yields control back cleanly once clear, and stands down when the core has
+  taken control of the bot (stun/knockback/vehicle) since it cannot walk out
+  on its own then.
+* **`BotCombat::UpdateRanged`** picks a backpedal direction that is not into a
+  hazard (it fans out and rejects dangerous spots/paths) instead of always
+  stepping straight back.
+* **Interrupts.** `BotHazards::ShouldInterrupt` judges whether a unit's
+  current cast is worth stopping (a real, interruptible, non-positive cast, or
+  any heal - respecting the core's own `CanBeInterrupted` rules).
+  `BotClassAI::TryInterruptVictim` pairs that judgement with each class's
+  interrupt kit, declared via the new `GetInterruptSpells()` virtual - Mage
+  Counterspell, Rogue Kick, Warrior Pummel/Shield Bash, Shaman Wind Shear,
+  Death Knight Mind Freeze - and `BotCombat` fires it on its own short pacing,
+  ahead of and independent of the normal rotation, so a short cast is not
+  missed. The old per-class "interrupt anything being cast" checks (Mage,
+  Rogue) were removed in favour of this shared, smarter path.
+
+**Config** (`worldserver.conf.dist`, all default on):
+`AiPlayerbot.AvoidGroundHazards`, `AiPlayerbot.HazardSafetyMargin` (yards,
+0..15), `AiPlayerbot.InterruptCasts`.
+
 ### Still open / worth verifying next
 
 * **mmaps required for good pathing.** The mover uses `PathGenerator`
   (mmaps); without extracted mmap tiles it falls back to a straight-line
   glide, which is fine in the open but will hug walls indoors. Ship mmaps for
   best results.
-* **No dungeon/raid movement intelligence** beyond follow + engage: bots do
-  not avoid ground effects or run mechanics.
 * **Random-bot levelling/gear** is a light pass (class spells + best usable
   vendor-grade item per slot); it is not a full talent/enchant/gem build.
 * **Group formation is cosmetic**, not role-aware (no tank-in-front melee

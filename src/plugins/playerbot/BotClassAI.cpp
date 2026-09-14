@@ -3,6 +3,7 @@
 #include "BotAI.h"
 #include "BotCombat.h"
 #include "BotSpells.h"
+#include "BotHazards.h"
 #include "Player.h"
 #include "Unit.h"
 #include "Group.h"
@@ -18,6 +19,34 @@ uint32 BotClassAI::RankFrom(uint32 const* ids, std::size_t count) const
         if (bot->HasSpell(ids[i - 1]))
             return ids[i - 1];
     return 0;
+}
+
+bool BotClassAI::TryInterruptVictim()
+{
+    std::vector<uint32> const interrupts = GetInterruptSpells();
+    if (interrupts.empty())
+        return false;
+
+    Unit* victim = _ai->GetCombat().GetVictim();
+    if (!victim)
+        return false;
+
+    // Only spend the interrupt on a cast actually worth stopping (a dangerous,
+    // interruptible cast or a heal) - the shared boss-mechanic judgement.
+    if (!BotHazards::ShouldInterrupt(victim))
+        return false;
+
+    // Try each interrupt in the kit, highest id (rank) first, and fire the
+    // first one that is actually castable right now (known, ready, affordable,
+    // in range, LOS). Trying the whole kit rather than a single "highest known"
+    // id matters when a class carries two distinct interrupts with different
+    // requirements (e.g. warrior Pummel vs Shield Bash) - if one is unusable
+    // this tick we fall through to the other instead of missing the cast.
+    for (auto it = interrupts.rbegin(); it != interrupts.rend(); ++it)
+        if (_ai->GetSpells().Castable(*it, victim))
+            return CastOnVictim(*it);
+
+    return false;
 }
 
 bool BotClassAI::CastOnVictim(uint32 spellId)

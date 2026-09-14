@@ -58,6 +58,17 @@ public:
     /// true when the class fights in melee (warrior, rogue, ...)
     virtual bool IsMeleeClass() const { return true; }
 
+    /// The class's spell-interrupt kit (Counterspell, Kick, Pummel, Mind
+    /// Freeze, Wind Shear, Rebuke, Skull Bash, Spell Lock, ...), lowest ->
+    /// highest rank. Empty for classes with no reliable interrupt. Used by the
+    /// dungeon/raid interrupt pass in BotCombat to stop dangerous boss casts.
+    virtual std::vector<uint32> GetInterruptSpells() const { return {}; }
+
+    /// Try to interrupt the current victim if it is casting something worth
+    /// stopping and we have an interrupt ready. Returns true if a cast was
+    /// fired. Shared implementation lives in BotClassAI.cpp.
+    bool TryInterruptVictim();
+
     /// lowest-health group/self member below threshold within spell range, or nullptr
     Unit* FindHealTarget(float healthPct, float range) const;
 

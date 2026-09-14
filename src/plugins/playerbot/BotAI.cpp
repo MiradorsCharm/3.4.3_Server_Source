@@ -35,6 +35,7 @@ BotAI::BotAI(Player* bot) : _bot(bot)
     _spells = std::make_unique<BotSpells>(bot);
     _combat = std::make_unique<BotCombat>(this, bot);
     _loot = std::make_unique<BotLoot>(this, bot);
+    _hazards = std::make_unique<BotHazards>(this, bot);
     _classAI.reset(CreateBotClassAI(bot->GetClass(), this));
 }
 
@@ -618,6 +619,17 @@ void BotAI::Update(uint32 diff)
     if (!_bot->IsAlive())
         return;
 
+    // Dungeon/raid mechanic awareness runs before everything else: standing in
+    // fire kills faster than any rotation helps, so dodging a hazard preempts
+    // the combat/loot/follow brain for this tick. When it takes control it owns
+    // the movement goal and we skip the normal brain so the two do not fight.
+    if (UpdateHazardAvoidance(diff))
+    {
+        _movement->Update(diff);
+        UpdateDiagnostics(diff);
+        return;
+    }
+
     // Brain order matters: combat first (it owns the movement goal), then
     // loot (out of combat only), then follow/stay/wander, then diagnostics.
     UpdateBrain(diff);
@@ -627,6 +639,81 @@ void BotAI::Update(uint32 diff)
     _movement->Update(diff);
 
     UpdateDiagnostics(diff);
+}
+
+// ---------------------------------------------------------------------------
+// dungeon / raid mechanic awareness
+// ---------------------------------------------------------------------------
+
+bool BotAI::UpdateHazardAvoidance(uint32 diff)
+{
+    if (!sBotConfig->AvoidGroundHazards)
+        return false;
+
+    if (_hazardReactCooldown > diff)
+        _hazardReactCooldown -= diff;
+    else
+        _hazardReactCooldown = 0;
+
+    // Scan the floor every tick (the module throttles the expensive grid sweep
+    // internally and keeps the "am I standing in it" flag fresh in between).
+    _hazards->Scan(diff);
+
+    // A bot the core has taken control of (stunned in the fire, knocked back,
+    // on a vehicle) cannot walk out on its own; let the core resolve it.
+    if (_bot->HasUnitState(UNIT_STATE_LOST_CONTROL) || _bot->GetVehicle())
+    {
+        _dodging = false;
+        return false;
+    }
+
+    if (!_hazards->InDanger())
+    {
+        // We just finished escaping: clear the dodge goal so the normal brain
+        // takes over cleanly next tick.
+        if (_dodging)
+        {
+            _dodging = false;
+            _movement->Stop();
+        }
+        return false;
+    }
+
+    // Standing in something harmful. Find a safe spot near our current fight
+    // (so a melee bot only sidesteps) and go there. Repath is paced so we do
+    // not spam new destinations every tick while already running clear.
+    if (!_dodging || _hazardReactCooldown == 0)
+    {
+        Unit* anchor = _combat->GetVictim();
+        if (!anchor)
+            anchor = GetMaster();
+
+        Position safe;
+        if (_hazards->FindSafeSpot(safe, anchor))
+        {
+            _hazardReactCooldown = 500;
+            _dodging = true;
+            // Face the spot and run flat-out; do not stop short (a hazard edge
+            // still ticks), so use a tight arrival distance.
+            _movement->MoveTo(safe.GetPositionX(), safe.GetPositionY(), safe.GetPositionZ(), 0.5f);
+
+            // Keep the melee auto-swing / auto-shot state alive against the
+            // current victim while we relocate - we are dodging, not dropping
+            // the fight.
+            if (sBotConfig->DebugMove)
+                TC_LOG_DEBUG("playerbot", "[hazard] {} dodging to {:.1f},{:.1f}",
+                    _bot->GetName(), safe.GetPositionX(), safe.GetPositionY());
+            return true;
+        }
+
+        // No safe spot found (boxed in). Fall through to the normal brain rather
+        // than freezing - at least the bot keeps fighting.
+        _dodging = false;
+        return false;
+    }
+
+    // Already running to a safe spot this pass.
+    return true;
 }
 
 void BotAI::UpdateDeath(uint32 diff)
