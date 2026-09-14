@@ -88,6 +88,11 @@ public:
     void CommandDps();
     void CommandGrind(bool on);
     void CommandSummon();
+    void CommandQueue();
+    void CommandLeave();
+    void CommandGuild();
+    void CommandGuildLeave();
+    void CommandSell();
 
     // --- victim management (used by combat + retaliate) ----------------------
     void Attack(Unit* target, std::string reason);
@@ -172,6 +177,7 @@ private:
     uint32 _grindScanCooldown = 0;
     uint32 _forceConsumeTimer = 0;
     uint32 _masterTeleportCooldown = 0;    // catch-up teleport pacing
+    uint32 _talentTimer = 0;               // periodic talent point spending
 
     // death / revive
     uint32 _deadTimer = 0;

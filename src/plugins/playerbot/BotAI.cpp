@@ -3,6 +3,9 @@
 #include "BotConfig.h"
 #include "BotDiagnostics.h"
 #include "BotFactory.h"
+#include "BotInteract.h"
+#include "BotQueues.h"
+#include "BotTalents.h"
 #include "Player.h"
 #include "Unit.h"
 #include "Creature.h"
@@ -212,6 +215,21 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
         CommandGrind(true);
     else if (startsWith("summon"))
         CommandSummon();
+    else if (startsWith("guild leave"))
+        CommandGuildLeave();
+    else if (startsWith("guild"))
+        CommandGuild();
+    else if (startsWith("queue"))
+        CommandQueue();
+    else if (startsWith("leave"))
+        CommandLeave();
+    else if (startsWith("sell"))
+        CommandSell();
+    else if (startsWith("talents"))
+    {
+        uint32 spent = BotTalents::SpendPoints(_bot);
+        WhisperMaster(spent ? ("spent " + std::to_string(spent) + " talent point(s)") : "no free talent points");
+    }
     else if (startsWith("status"))
         CommandStatus(sender);
     else if (startsWith("release"))
@@ -220,7 +238,7 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
             _deadTimer = sBotConfig->ReviveDelayMs;  // fast-path the self-res
     }
     else if (startsWith("help"))
-        WhisperMaster("I understand: follow, stay, come, summon, attack my target, assist, stop attack, loot, heal, buff, rez, cure, eat, drink, upgrade, repair, tank, dps, grind, stop grind, status, release");
+        WhisperMaster("I understand: follow, stay, come, summon, attack my target, assist, stop attack, loot, heal, buff, rez, cure, eat, drink, upgrade, repair, tank, dps, grind, stop grind, queue, leave, guild, sell, talents, status, release");
     else
         WhisperMaster("I don't know that command - whisper 'help' for the list");
 }
@@ -402,6 +420,52 @@ void BotAI::CommandSummon()
         WhisperMaster("on my way to you");
     }
     _lastOrder = "summon";
+}
+
+void BotAI::CommandQueue()
+{
+    std::string reply;
+    if (BotQueues::QueueBattleMaster(_bot, reply))
+        WhisperMaster(reply + " - I will enter when it is ready");
+    else
+        WhisperMaster(reply);
+    _lastOrder = "queue";
+}
+
+void BotAI::CommandLeave()
+{
+    if (_bot->InBattleground())
+    {
+        _bot->LeaveBattleground(true);
+        WhisperMaster("left the battleground");
+    }
+    else if (BotQueues::LeaveQueues(_bot))
+        WhisperMaster("left the queue(s)");
+    else
+        WhisperMaster("I am not in a battleground or queue");
+    _lastOrder = "leave";
+}
+
+void BotAI::CommandGuild()
+{
+    Player* master = GetMaster();
+    WhisperMaster(BotInteract::JoinMastersGuild(_bot, master)
+        ? "joined your guild" : "you are not in a guild (or I already am)");
+    _lastOrder = "guild";
+}
+
+void BotAI::CommandGuildLeave()
+{
+    WhisperMaster(BotInteract::LeaveGuild(_bot) ? "left the guild" : "I am not in a guild");
+    _lastOrder = "guild leave";
+}
+
+void BotAI::CommandSell()
+{
+    std::string reply;
+    BotInteract::SellJunk(_bot, reply);
+    WhisperMaster(reply);
+    _lastOrder = "sell";
 }
 
 void BotAI::CommandStatus(Player* to)
@@ -590,6 +654,17 @@ void BotAI::UpdateRetaliate()
     if (_combat->HasVictim())
         return;
 
+    // Duels: fight the opponent until the duel is over
+    if (_bot->duel && _bot->duel->Opponent)
+    {
+        if (_bot->duel->Opponent->IsAlive())
+        {
+            _combat->SetStance(_classAI->IsMeleeClass() ? BotCombatStance::Melee : BotCombatStance::Ranged);
+            _combat->SetVictim(_bot->duel->Opponent, "duel");
+            return;
+        }
+    }
+
     // Fight back: whoever pulled us into combat.
     if (_bot->IsInCombat())
     {
@@ -670,6 +745,15 @@ void BotAI::UpdatePartyCare(uint32 diff)
     // buffs only out of combat; in combat the GCDs belong to the rotation
     if (!_combat->HasVictim() && !_bot->IsInCombat())
         _classAI->BuffTick(*this);
+
+    // level-ups grant talent points no client would ever spend for us
+    _talentTimer += 2000;
+    if (_talentTimer >= 60000)
+    {
+        _talentTimer = 0;
+        if (_bot->GetLevel() >= 10 && _bot->m_activePlayerData->CharacterPoints)
+            BotTalents::SpendPoints(_bot);
+    }
 }
 
 void BotAI::UpdateConsume(uint32 diff)
@@ -705,6 +789,22 @@ void BotAI::UpdateConsume(uint32 diff)
 
 void BotAI::UpdateGrind(uint32 diff)
 {
+    // battlegrounds: always engage nearby enemies, no grind mode needed
+    if (_bot->InBattleground())
+    {
+        if (_combat->HasVictim() || _movement->HasLiveGoal())
+            return;
+        if (_grindScanCooldown > diff)
+        {
+            _grindScanCooldown -= diff;
+            return;
+        }
+        _grindScanCooldown = 2000;
+        if (Unit* enemy = BotQueues::FindEnemyPlayer(_bot, 45.0f))
+            Attack(enemy, "battleground");
+        return;
+    }
+
     if (!_grindMode || _stay || _combat->HasVictim())
         return;
     if (_movement->HasLiveGoal())

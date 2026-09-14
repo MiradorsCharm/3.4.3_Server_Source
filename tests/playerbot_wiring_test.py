@@ -245,5 +245,68 @@ class PartyServicesTest(unittest.TestCase):
         self.assertIn("DurabilityRepairAll", ai)
 
 
+class AdvancedServicesTest(unittest.TestCase):
+    """The 'playable world' systems: talents, duels/trade/guild, battlegrounds,
+    dungeon finder, auction house - all driven through real session handlers."""
+
+    def test_talents_module_exists_and_is_used(self):
+        self.assertTrue((PLUGIN / "BotTalents.cpp").exists())
+        factory = (PLUGIN / "BotFactory.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("BotTalents::SpendPoints(bot)", factory)          # on login
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("BotTalents::SpendPoints(_bot)", ai)              # on level up (periodic)
+        talents = (PLUGIN / "BotTalents.cpp").read_text(encoding="utf-8", errors="replace")
+        # must go through the core's validated learn path, never poked maps
+        self.assertIn("LearnTalent", talents)
+        self.assertNotIn("GetTalentMap", talents)
+
+    def test_trade_and_duel_accepts_run_through_session_handlers(self):
+        interact = (PLUGIN / "BotInteract.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("HandleBeginTradeOpcode", interact)
+        self.assertIn("HandleAcceptTradeOpcode", interact)
+        self.assertIn("HandleDuelResponseOpcode", interact)
+        # only trusted players are answered
+        self.assertIn("AcceptsCommandsFrom", interact)
+
+    def test_guild_join_uses_guild_add_member(self):
+        interact = (PLUGIN / "BotInteract.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("AddMember", interact)
+        self.assertIn("HandleGuildLeave", interact)
+
+    def test_bg_queue_uses_battlemaster_handler(self):
+        queues = (PLUGIN / "BotQueues.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("HandleBattlemasterJoinOpcode", queues)
+        self.assertIn("HandleBattleFieldPortOpcode", queues)            # enter + leave
+        self.assertIn("LeaveBattleground", queues)
+        self.assertIn("IsBattleMaster", queues)                         # proximity like a real player
+
+    def test_lfg_proposal_is_accepted(self):
+        queues = (PLUGIN / "BotQueues.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("SMSG_LFG_PROPOSAL_UPDATE", queues)
+        self.assertIn("HandleLfgProposalResultOpcode", queues)
+        self.assertIn("LFG_STATE_PROPOSAL", queues)
+
+    def test_bg_combat_targeting_is_wired(self):
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("FindEnemyPlayer", ai)
+        self.assertIn("InBattleground()", ai)
+
+    def test_duel_fighting_is_wired(self):
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("duel->Opponent", ai)
+
+    def test_auction_and_vendor_sell(self):
+        interact = (PLUGIN / "BotInteract.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("HandleAuctionSellItem", interact)
+        self.assertIn("HandleSellItemOpcode", interact)
+        self.assertIn("UNIT_NPC_FLAG_AUCTIONEER", interact)
+
+    def test_pumps_are_driven_by_the_manager(self):
+        manager = (PLUGIN / "BotManager.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("BotInteract::PumpSession(bot)", manager)
+        self.assertIn("BotQueues::PumpQueues(bot)", manager)
+        self.assertIn("BotQueues::NotePacket(bot, packet)", manager)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

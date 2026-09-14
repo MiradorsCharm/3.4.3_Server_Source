@@ -184,6 +184,12 @@ Whisper the bot (or use party/raid chat if you are its master):
 | `tank` | tank role: taunt/presence upkeep (tank-capable classes) |
 | `dps` | back to damage role |
 | `grind` / `stop grind` | attack nearby mobs while idle |
+| `queue` | queue at a nearby battlemaster (auto-enters, fights, `leave` exits) |
+| `leave` | leave battleground / queues |
+| `guild` | join the master's guild |
+| `guild leave` | leave the guild |
+| `sell` | vendor junk / post equipment at the auction house |
+| `talents` | spend free talent points now |
 | `status` | one-line self report |
 | `release` | speed up self-resurrection |
 | `help` | the list |
@@ -206,6 +212,20 @@ account; GMs can always command.
   automatically.
 * **Catch up**: a master who portals away is followed by a paced
   teleport (also available as the `summon` command).
+* **Talents**: every earned talent point is spent automatically through the
+  core's validated `Player::LearnTalent` (tier/tab order) - on login, on
+  level-up (checked every minute), and on the `talents` command.
+* **Social**: duels from the master are accepted and fought; trade windows
+  from the master are opened and confirmed; `guild` joins the master's
+  guild, `guild leave` leaves it.
+* **PvP**: `queue` at a battlemaster joins a level-appropriate battleground
+  through the real queue; when invited the bot walks the portal, engages
+  nearby enemies inside, and `leave` exits (or clears queues).
+* **Dungeons**: when the group leader queues the dungeon finder, bots accept
+  the proposal automatically and play the dungeon with the normal combat
+  and loot brains.
+* **Economy**: `sell` vendors gray junk and posts unneeded equipment on the
+  auction house (brought to a vendor/auctioneer like a player would).
 
 ## 7. Combat behaviour
 

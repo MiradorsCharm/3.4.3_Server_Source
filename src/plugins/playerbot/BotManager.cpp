@@ -3,6 +3,8 @@
 #include "BotAI.h"
 #include "BotConfig.h"
 #include "BotFactory.h"
+#include "BotInteract.h"
+#include "BotQueues.h"
 #include "Player.h"
 #include "WorldSession.h"
 #include "Server/Packets/MovementPackets.h"
@@ -462,7 +464,13 @@ void BotManager::Update(uint32 diff)
             }
 
             if (bot && bot->IsInWorld())
+            {
                 session->HandleBotPackets();
+
+                // answer trades/duels, walk BG portals, accept LFG proposals
+                BotInteract::PumpSession(bot);
+                BotQueues::PumpQueues(bot);
+            }
             continue;
         }
 
@@ -641,6 +649,7 @@ namespace
 
     void HookBotPacketSent(Player* bot, WorldPacket const* packet)
     {
+        BotQueues::NotePacket(bot, packet);         // LFG proposal ids
         if (BotAI* ai = bot->GetBotAI())
             ai->HandleBotOutgoingPacket(packet);
     }

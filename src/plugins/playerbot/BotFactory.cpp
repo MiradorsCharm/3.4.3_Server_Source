@@ -1,6 +1,7 @@
 #include "BotFactory.h"
 
 #include "BotConfig.h"
+#include "BotTalents.h"
 #include "Player.h"
 #include "MotionMaster.h"
 #include "WorldSession.h"
@@ -443,6 +444,9 @@ namespace BotFactory
 
         // class spells (trainable ranks up to the current level)
         LearnClassSpells(bot);
+
+        // spend every earned talent point legally
+        BotTalents::SpendPoints(bot);
 
         // gear
         RepairGear(bot);
