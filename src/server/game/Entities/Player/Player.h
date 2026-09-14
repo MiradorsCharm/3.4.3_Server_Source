@@ -2032,6 +2032,9 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         // notifiers
         void SendAttackSwingCancelAttack() const;
         void SetAttackSwingError(Optional<AttackSwingErr> err);
+        // playerbot: the last reason the core refused a swing (SMSG_ATTACK_SWING_ERROR is
+        // normally only visible to a client, and a bot session has none)
+        Optional<AttackSwingErr> GetAttackSwingError() const { return m_swingErrorMsg; }
         void SendAutoRepeatCancel(Unit* target);
         void SendExplorationExperience(uint32 Area, uint32 Experience) const;
 

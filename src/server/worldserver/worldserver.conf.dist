@@ -4719,12 +4719,22 @@ AiPlayerbot.RandomClassSpecProbability.11.2 = 45
 #    AI diagnostics and random-change multiplier
 #        Description: Limit AI detail logging to grouped bots, log values each tick, and scale
 #                     random AI changes. RandomChangeMultiplier must be finite and greater than zero.
+#                     DebugCombat watches every bot that has a live target: if it stops making
+#                     progress for four seconds the server prints the one line that says which
+#                     gate is holding the bot (movement, swing range, facing, a blocking cast,
+#                     teleport, disarm/pacify), then puts the bot back into a state where it can
+#                     act again. Rate limited to one line per bot per minute and one line per
+#                     fifteen seconds overall. 2 additionally logs a full snapshot once per second
+#                     per bot at debug level (needs Logger.playerbot=2,Console Server).
+#                     Whisper a bot "combat debug" for the same line on demand, any setting.
 #        Default:     1   - (LogInGroupOnly)
 #                     0   - (LogValuesPerTick)
+#                     1   - (DebugCombat)
 #                     1.0 - (RandomChangeMultiplier)
 
 AiPlayerbot.LogInGroupOnly = 1
 AiPlayerbot.LogValuesPerTick = 0
+AiPlayerbot.DebugCombat = 1
 AiPlayerbot.RandomChangeMultiplier = 1.0
 
 #

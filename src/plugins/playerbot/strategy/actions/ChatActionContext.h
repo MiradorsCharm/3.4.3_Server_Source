@@ -5,6 +5,7 @@
 #include "strategy/actions/LeaveGroupAction.h"
 #include "strategy/actions/TellReputationAction.h"
 #include "strategy/actions/LogLevelAction.h"
+#include "strategy/actions/CombatDebugAction.h"
 #include "strategy/actions/TellLosAction.h"
 #include "strategy/actions/DropQuestAction.h"
 #include "strategy/actions/QueryQuestAction.h"
@@ -63,6 +64,7 @@ namespace ai
             creators["leave"] = &ChatActionContext::leave;
             creators["reputation"] = &ChatActionContext::reputation;
             creators["log"] = &ChatActionContext::log;
+            creators["combat debug"] = &ChatActionContext::combat_debug;
             creators["los"] = &ChatActionContext::los;
             creators["drop"] = &ChatActionContext::drop;
             creators["query quest"] = &ChatActionContext::query_quest;
@@ -176,6 +178,7 @@ namespace ai
         static Action* leave(PlayerbotAI* ai) { return new LeaveGroupAction(ai); }
         static Action* reputation(PlayerbotAI* ai) { return new TellReputationAction(ai); }
         static Action* log(PlayerbotAI* ai) { return new LogLevelAction(ai); }
+        static Action* combat_debug(PlayerbotAI* ai) { return new CombatDebugAction(ai); }
         static Action* los(PlayerbotAI* ai) { return new TellLosAction(ai); }
         static Action* ll(PlayerbotAI* ai) { return new LootStrategyAction(ai); }
         static Action* add_all_loot(PlayerbotAI* ai) { return new AddAllLootAction(ai); }

@@ -52,6 +52,10 @@ public:
     bool randomBotLoginAtStartup;
     uint32 randomBotTeleLevel;
     bool logInGroupOnly, logValuesPerTick;
+    // 0 = silent, 1 = report a bot that is stuck in an attack stance and say
+    // which gate is holding it, 2 = also log a full combat snapshot once per
+    // second per bot (debug level, needs Logger.playerbot=2).
+    uint32 debugCombat = 1;      // also the value used when the whole system is disabled
     bool fleeingEnabled;
     std::string combatStrategies, nonCombatStrategies;
     std::string randomBotCombatStrategies, randomBotNonCombatStrategies;

@@ -98,6 +98,21 @@ It creates:
 The script is idempotent (`CREATE TABLE IF NOT EXISTS` + `INSERT IGNORE`) so it
 can be re-run safely.
 
+`ai_playerbot_names` and `ai_playerbot_guild_names` are plain operator data: the
+server reads free rows from them and never writes to them. An earlier revision
+generated syllable names and `INSERT`ed them on every bot-creation pass, which
+both wrote rows nobody had asked for and printed one validation error per rejected
+name on each retry; it was removed. A bot pass therefore needs at least
+`AiPlayerbot.RandomBotAccountCount x 10` unused names, and reports the shortfall
+once:
+
+```sql
+INSERT INTO ai_playerbot_names (name) VALUES ('Nameone'), ('Nametwo');
+```
+
+Names already taken by characters are skipped by the picker, so a pool smaller
+than the account count only costs you the surplus character slots.
+
 ---
 
 ## 4. Configuration
@@ -147,6 +162,8 @@ AiPlayerbot.RandomBotMaxLevel = 80
 AiPlayerbot.CommandPrefix = ""
 # Disable the optional TCP command server
 AiPlayerbot.CommandServerPort = 0
+# 0 = silent, 1 = say why a bot that cannot fight is stuck, 2 = per-second snapshots
+AiPlayerbot.DebugCombat = 1
 ```
 
 The template's `RandomBotMaxLevel = 255` is capped by `MaxPlayerLevel` (normally
@@ -253,6 +270,35 @@ stats / spells / items
 
 Prefix them with `AiPlayerbot.CommandPrefix` if you configured one.
 
+### A bot that will not fight: `combat debug`
+
+Whisper a bot `combat debug` (or say it in party/raid chat). It answers with one
+line describing every gate that has to be open before the bot can hurt anything:
+
+```
+in swing range (3.00 yd of 5.00 allowed) with the swing timer still running |
+tgt=alive d3d=3.00 dz=0.10 melee=5.00 inRange=1 los=1 ... atk=1 swingReady=0
+swingErr=none ... cast=0 tele=0 moving=1 mayMove=1 run=4.57 | stalled=6s |
+trace: A:reach melee - OK|A:melee - OK
+```
+
+Read it outside-in: `tgt=none` means target selection, not combat, is broken;
+`mayMove=0`/`tele=1` means the bot is not allowed to move (rooted, mid-teleport,
+stunned); `castBlocksMove=1` means a cast is holding both movement and swings;
+`inRange=0` with `moving=1` and a `dz` bigger than ~1.5 is terrain (the swing test
+is 3D); `inRange=1 swingErr=BadFacing` is orientation; `stalled` says how long the
+state has lasted. `trace` is the engine's own per-tick decision log for that bot -
+`A:<action> - USELESS|IMPOSSIBLE|FAILED|OK` is the shortest way to see which action
+the AI keeps choosing.
+
+The same line is written automatically when a bot makes no progress toward a live
+target for four seconds, under `AiPlayerbot.DebugCombat = 1` (the default), as an
+`ERROR` in the `playerbot` channel - so it shows with the stock `Logger.root=5` and
+needs no configuration to start working. It is capped to one line per bot per
+minute and one line per fifteen seconds for the whole realm; `DebugCombat = 2`
+additionally logs a snapshot once per second per bot at debug level, which needs
+`Logger.playerbot=2,Console Server` and is a one-bot-at-a-time tool.
+
 ### Random bots
 
 With `AiPlayerbot.RandomBotAutologin = 1` the `RandomPlayerbotMgr` keeps
@@ -294,19 +340,76 @@ migrations applied during the port:
   "can I actually attack this unit?" goes through `Unit::isTargetableForAttack()`
   instead of hand-rolling the flag test (`PossibleTargetsValue::AcceptUnit`,
   mirroring the core's own `NearestAttackableNoTotemUnitInObjectRangeCheck`).
+* **Melee range** — a swing is gated by the core on `Unit::IsWithinMeleeRange()`,
+  which is 3D and reach based (`max(attackerReach + victimReach + 4/3,
+  NOMINAL_MELEE_RANGE)`), while the bot's `distance` value is `GetDistance2d()`.
+  Every "close enough to hit" decision in the plugin therefore asks the core
+  (`MovementAction::IsInMeleeRange`) and plants the bot *inside* that envelope
+  (`ComputeMeleeStopDistance`) rather than comparing the 2D number with
+  `AiPlayerbot.MeleeDistance`. The mismatch is not theoretical: a bot on a slope
+  stopped at 3 yards of planar distance, the core reported `NotInRange`, and the
+  bot stood in its attack animation indefinitely.
+* **Attack orders chase** — `AttackAction::Attack()` used to start the swing and
+  return success, while the chase it depends on (`reach melee`) is pushed by the
+  "enemy out of melee" trigger at *lower* priority than the attack action itself;
+  a bot that was out of reach re-declared success every tick and never walked.
+  The order that engages now also starts the approach, and a bot that cannot move
+  says so (and drops the stance) instead of posing.
 * **Database** — `PQuery`/`PExecute` use `{}` fmt placeholders instead of `%s`/`%u`.
 * **Bit-packed server packets** (e.g. `SMSG_TRADE_STATUS`) are parsed with
   `ResetBitPos()` / `ReadBit()` / `ReadBits(n)`.
 
 ---
 
-## 7. Limitations & known issues
+## 7. Swapping bot implementations (why not AzerothCore's mod-playerbots)
+
+The obvious candidate for "a better set of bots" is
+[`mod-playerbots`](https://github.com/mod-playerbots/mod-playerbots). Reaching
+for it costs more than it buys here, for three reasons:
+
+1. **Same lineage.** mod-playerbots *is* the same ike3/mangosbot AI that this
+   plugin is - it descends from the mangosbot/celguar branch, and the module's
+   own README says so. `PlayerbotAI`, the engine/strategy/value/trigger layer,
+   action names, `AiPlayerbot.*` config keys and the `!follow`/`grind` command
+   set are all shared. Swapping would not change how a bot decides to walk at a
+   mob; it would change which fork of the same decision engine asks for the walk.
+2. **It is not a drop-in module.** It requires a patched core
+   (`mod-playerbots/azerothcore-wotlk`, branch `Playerbot`) whose *core*
+   modifications are exactly the socketless-session/player-bypass plumbing that
+   lets a bot move, act and skip client-side expectations. Adopting it means
+   re-implementing those core patches for this tree anyway - which is the part
+   this repository already has, hook-based and marked with `playerbot mod`.
+3. **Different target.** It is written for AzerothCore 3.3.5: `ScriptedAI`/
+   `PlayerScript` hook signatures, `ChatThrottleMgr`, its own `Trainer`/`Group`
+   APIs, Eluna-free but AC-specific spell and packet helpers. The porting work in
+   [section 6](#6-porting-notes-335--343) would be redone against a third API
+   surface, and the 110 config keys, 6 SQL tables, unified
+   `worldserver.conf.dist` block and the CI regression suites would all have to
+   be rebuilt from scratch.
+
+The real failure mode - "bots do not attack" - is a *core-integration* bug in
+the movement/combat path (see the melee-range notes in
+[section 6](#6-porting-notes-335--343)), and any bot system on a
+client-authoritative-player core hits it in the same place. Use
+[`combat debug`](#a-bot-that-will-not-fight-combat-debug) to locate it before
+concluding the AI layer is at fault.
+
+---
+
+## 8. Limitations & known issues
 
 * **Spell rotations need tuning** — the class combat strategies (warrior, mage,
   priest, etc.) were ported from the 3.3.5 mangosbot codebase and still
   reference spell names that may differ between 3.3.5 and 3.4.3.  The bots will
   fight, but their rotations may not be optimal.  The spell names are defined
   in the strategy files under `strategy/<class>/` and can be adjusted.
+* **Combat is not verified end-to-end from this workspace** — the melee gate, the
+  chase and the stall watchdog are covered by `tests/playerbot_combat_test.py`
+  (the classifier itself is compiled and executed against fake snapshots), but no
+  full Windows build or live-realm run happens here. If a bot still will not
+  fight, `combat debug` and the automatic stall line say which gate is closed;
+  if the answer is `tgt=none` the problem is target selection, not combat, and if
+  it names terrain or a zero `run=` speed the cause is outside the bot AI.
 * **Static linking required** — the plugin calls many core functions that lack
   `TC_GAME_API` exports.  Build with `-DWITH_DYNAMIC_LINKING=0` (the default).
   If `BUILD_SHARED_LIBS` is detected, CMake will emit a warning.
@@ -321,7 +424,7 @@ migrations applied during the port:
 
 ---
 
-## 8. CI/CD
+## 9. CI/CD
 
 This repository includes two GitHub Actions workflows:
 

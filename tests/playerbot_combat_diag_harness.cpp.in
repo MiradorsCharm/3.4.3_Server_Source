@@ -1,0 +1,249 @@
+// Regression harness for tests/playerbot_combat_test.py.
+//
+// CombatDiag.cpp is compiled *verbatim* from the plugin (it has no core
+// dependencies by design), so this file is only the assertions: it pins what the
+// bot tells the operator - and what it then does about it - when a bot has a live
+// target but is neither closing the distance nor dealing damage. That state used
+// to be silent: the bot kept its attack stance forever and the console said
+// nothing at all, which is why "the bots won't attack" was impossible to debug
+// without a rebuild per guess.
+//
+// The snapshot mirrors exactly the gates Unit::DoMeleeAttackIfReady() and
+// Unit::AttackerStateUpdate() walk through (3D melee range, line of sight, the
+// 120 degree arc, the swing timer, PACIFIED/DISARMED) plus the ones the bot's own
+// movement path checks (teleport, cast blocking movement, IsMovingAllowed), so a
+// change in either place has to be reflected here or a check fails.
+
+#include "CombatDiag.h"
+
+#include <cmath>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+#define CHECK(...) do { if (!(__VA_ARGS__)) throw std::runtime_error("Check failed at line " + std::to_string(__LINE__) + ": " #__VA_ARGS__); } while (false)
+
+using namespace ai;
+
+static bool contains(std::string const& text, char const* needle)
+{
+    return text.find(needle) != std::string::npos;
+}
+
+// A bot that is standing in swing range with its attack state on and a swing
+// ready: the reference "nothing is wrong" snapshot every case below mutates.
+static CombatSnapshot Fighting()
+{
+    CombatSnapshot snap;
+    snap.hasTarget = snap.targetAlive = snap.alive = true;
+    snap.sameMap = snap.hasLOS = snap.inArc = true;
+    snap.inMeleeRange = true;
+    snap.attackState = true;
+    snap.swingReady = true;
+    snap.distance3d = 3.0f;
+    snap.zGap = 0.0f;
+    snap.meleeRange = 5.0f;
+    snap.canMoveNow = snap.movingNow = true;
+    snap.runSpeed = 4.57f;
+    snap.hasMeleeWeapon = true;
+    snap.stallMs = 30000;
+    return snap;
+}
+
+static CombatStall StallOf(CombatSnapshot snap)
+{
+    return EvaluateCombatStall(snap);
+}
+
+int main()
+try
+{
+    // --- a bot that is fighting is never reported -------------------------------
+    CHECK(!StallOf(Fighting()).report);
+
+    // Below the stall window even a hopeless-looking state is just a chase, and
+    // reporting it would put a line in the log for every bot that walks 5 yards.
+    CombatSnapshot young = Fighting();
+    young.inMeleeRange = false;
+    young.movingNow = false;
+    young.attackState = false;
+    young.stallMs = 1000;
+    CHECK(!StallOf(young).report);
+
+    CombatSnapshot noTarget = Fighting();
+    noTarget.hasTarget = false;
+    noTarget.stallMs = 60000;
+    CHECK(!StallOf(noTarget).report);
+
+    CombatSnapshot deadTarget = Fighting();
+    deadTarget.targetAlive = false;
+    deadTarget.stallMs = 60000;
+    CHECK(!StallOf(deadTarget).report);
+
+    // --- out of range, and nothing is even trying -------------------------------
+    CombatSnapshot frozen = Fighting();
+    frozen.inMeleeRange = false;
+    frozen.distance3d = 18.0f;
+    frozen.movingNow = false;
+    CombatStall stall = StallOf(frozen);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::RetryMove);
+    CHECK(contains(stall.reason, "no movement generator"));
+
+    // Zero run speed is the one reason a chase cannot move that must be named
+    // explicitly, because the fix is elsewhere (stats/auras), not in the AI.
+    CombatSnapshot noSpeed = frozen;
+    noSpeed.runSpeed = 0.0f;
+    stall = StallOf(noSpeed);
+    CHECK(stall.report);
+    CHECK(contains(stall.reason, "MOVE_RUN speed"));
+
+    // A chase that runs but never closes: the report has to say the gap is 3D
+    // while the AI steers by 2D, otherwise this reads as "the bot refuses".
+    CombatSnapshot slope = frozen;
+    slope.movingNow = true;
+    slope.distance3d = 6.4f;
+    slope.zGap = 4.1f;
+    stall = StallOf(slope);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::RetryMove);
+    CHECK(contains(stall.reason, "gap is not closing"));
+    CHECK(contains(stall.reason, "3D"));
+
+    // ...and the vertical gap must only be mentioned when it is actually the story.
+    CombatSnapshot flat = slope;
+    flat.zGap = 0.1f;
+    CHECK(!contains(StallOf(flat).reason, "above/below"));
+
+    // Out of range and not even allowed to start walking: give up on this victim
+    // instead of leaving the attack stance up (the zombie state users reported).
+    CombatSnapshot rooted = frozen;
+    rooted.canMoveNow = false;
+    stall = StallOf(rooted);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::DropTarget);
+    CHECK(contains(stall.reason, "may not start moving"));
+
+    // --- states that block *both* movement and swings ---------------------------
+    CombatSnapshot casting = frozen;
+    casting.canMoveNow = true;
+    casting.movementBlockedByCast = true;
+    casting.casting = true;
+    casting.blockingSpell = 5019;
+    stall = StallOf(casting);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::ClearCast);
+    CHECK(contains(stall.reason, "blocking movement and swings"));
+    CHECK(contains(stall.reason, "5019"));
+
+    CombatSnapshot mounted = frozen;
+    mounted.mounted = true;
+    stall = StallOf(mounted);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::ClearCast);
+    CHECK(contains(stall.reason, "mounted"));
+
+    // A mid-teleport bot is *correctly* frozen (the AI must not act), so the
+    // verdict explains it without shouting about it.
+    CombatSnapshot teleporting = frozen;
+    teleporting.teleported = true;
+    stall = StallOf(teleporting);
+    CHECK(!stall.report);
+    CHECK(contains(stall.reason, "teleport"));
+
+    CombatSnapshot pacified = Fighting();
+    pacified.pacified = true;
+    stall = StallOf(pacified);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::DropTarget);
+    CHECK(contains(stall.reason, "PACIFIED"));
+
+    CombatSnapshot disarmed = Fighting();
+    disarmed.disarmed = true;
+    disarmed.hasMeleeWeapon = false;
+    stall = StallOf(disarmed);
+    CHECK(stall.report);
+    CHECK(contains(stall.reason, "DISARMED"));
+
+    // An empty main hand is NOT a stall: unarmed bots still swing. The old
+    // behaviour ("no weapon, nothing to swing") would have disarmed every fist
+    // fighter on the realm.
+    CombatSnapshot unarmed = Fighting();
+    unarmed.hasMeleeWeapon = false;
+    CHECK(!StallOf(unarmed).report);
+
+    // --- in range but the core still refuses ------------------------------------
+    CombatSnapshot noAttack = Fighting();
+    noAttack.attackState = false;
+    stall = StallOf(noAttack);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::RetryMove);
+    CHECK(contains(stall.reason, "AttackStart"));
+
+    CombatSnapshot badFacing = Fighting();
+    badFacing.inArc = false;
+    badFacing.swingError = "BadFacing";
+    stall = StallOf(badFacing);
+    CHECK(stall.report);
+    CHECK(contains(stall.reason, "120 degree"));
+
+    CombatSnapshot noLos = Fighting();
+    noLos.hasLOS = false;
+    noLos.swingError = "NotInRange";
+    stall = StallOf(noLos);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::DropTarget);
+    CHECK(contains(stall.reason, "line of sight"));
+
+    CombatSnapshot offCadence = Fighting();
+    offCadence.swingReady = false;
+    stall = StallOf(offCadence);
+    CHECK(stall.report);
+    CHECK(contains(stall.reason, "swing timer"));
+
+    // The core's own complaint has to be able to veto "everything is fine": this is
+    // the NotInRange case the AI cannot see in its own numbers (2D distance is
+    // inside meleeDistance, the swing test is 3D).
+    CombatSnapshot disagreement = Fighting();
+    disagreement.inMeleeRange = false;
+    disagreement.distance3d = 3.0f;
+    disagreement.movingNow = false;
+    disagreement.swingError = "NotInRange";
+    stall = StallOf(disagreement);
+    CHECK(stall.report);
+    CHECK(contains(stall.reason, "3D 3.00"));
+
+    // --- the printed line carries every number, not just prose ------------------
+    std::string line = FormatCombatSnapshot(frozen);
+    for (char const* key : { "tgt=alive", "d3d=", "dz=", "melee=", "inRange=0", "atk=1",
+                             "swingErr=none", "castBlocksMove=0", "tele=0", "moving=0",
+                             "mayMove=1", "run=", "stalled=30s" })
+        CHECK(contains(line, key));
+
+    CHECK(!contains(FormatCombatSnapshot(Fighting()), "trace:"));
+    CombatSnapshot traced = Fighting();
+    traced.trace = "|A:reach melee - OK";
+    CHECK(contains(FormatCombatSnapshot(traced), "A:reach melee - OK"));
+
+    // --- where a melee bot must plant itself -----------------------------------
+    // Flat ground, generous swing envelope: keep the configured stance distance.
+    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 20.0f, 0.0f, 3.0f) - 3.0f) < 0.01f);
+    // Slope: 4.1 yd of height eats the whole envelope, so walk much closer.
+    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 6.4f, 4.1f, 3.0f) - 1.5f) < 0.01f);
+    // Never closer than 1.5 yd (inside the model the swing test is meaningless and
+    // the bot shuffles), even when the arithmetic asks for it.
+    CHECK(std::fabs(ComputeMeleeStopDistance(2.0f, 10.0f, 0.0f, 3.0f) - 1.5f) < 0.01f);
+    CHECK(std::fabs(ComputeMeleeStopDistance(0.0f, 10.0f, 0.0f, 3.0f) - 1.5f) < 0.01f);
+    // Never further away than it already is: that would back the bot up.
+    CHECK(std::fabs(ComputeMeleeStopDistance(5.0f, 2.0f, 0.0f, 3.0f) - 2.0f) < 0.01f);
+    // A tighter stance than the envelope allows is honoured, not widened.
+    CHECK(std::fabs(ComputeMeleeStopDistance(8.0f, 30.0f, 0.0f, 1.8f) - 1.8f) < 0.01f);
+
+    std::cout << "combat diagnostics regressions OK" << std::endl;
+    return 0;
+}
+catch (std::exception const& error)
+{
+    std::cerr << error.what() << std::endl;
+    return 1;
+}

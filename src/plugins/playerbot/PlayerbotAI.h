@@ -7,6 +7,7 @@
 #include "strategy/Engine.h"
 #include "strategy/ExternalEventHelper.h"
 #include "ChatFilter.h"
+#include "CombatSnapshotSource.h"
 #include "PlayerbotSecurity.h"
 #include "Entities/Player/Player.h"
 #include <stack>
@@ -164,6 +165,17 @@ public:
     virtual bool HasAuraToDispel(Unit* player, uint32 dispelType);
     bool CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell = true);
 
+    // --- combat diagnostics -------------------------------------------------
+    // See AiPlayerbot.DebugCombat and the "combat debug" bot chat command.
+    // A bot that has a victim but cannot reach or hit it used to stand in its
+    // attack animation forever, which is indistinguishable from "the bots are
+    // lazy" from outside. These three calls gather the state the core actually
+    // checks before it lets a swing land, explain it in one line, and take the
+    // bot out of the zombie stance so it can try something else.
+    void UpdateCombatDiagnostics(uint32 elapsed);
+    CombatSnapshot CaptureCombatSnapshot();
+    std::string FormatCombatStatus();
+
     bool HasAura(uint32 spellId, const Unit* player);
     bool CastSpell(uint32 spellId, Unit* target);
     bool canDispel(const SpellInfo* entry, uint32 dispelType);
@@ -198,5 +210,16 @@ protected:
     PacketHandlingHelper masterOutgoingPacketHandlers;
     CompositeChatFilter chatFilter;
     PlayerbotSecurity security;
+
+    // Combat diagnostics state (see UpdateCombatDiagnostics). The watchdog tracks
+    // how long the bot has been making no progress against one specific victim;
+    // combatReportCooldown keeps a permanently broken bot from repeating itself
+    // into an unreadable console.
+    ObjectGuid combatWatchVictim;
+    uint32 combatStallMs = 0;
+    float combatBestDistance = 0.0f;
+    uint32 combatBestHealth = 0;
+    uint32 combatReportCooldownMs = 0;
+    uint32 combatDebugTickMs = 0;
 };
 

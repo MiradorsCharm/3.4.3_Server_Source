@@ -8,6 +8,7 @@
 #include "../../FleeManager.h"
 #include "../../LootObjectStack.h"
 #include "../../PlayerbotAIConfig.h"
+#include "../../CombatDiag.h"
 
 using namespace ai;
 
@@ -179,6 +180,36 @@ bool MovementAction::IsMovingAllowed()
 
     MotionMaster &mm = *bot->GetMotionMaster();
     return mm.GetCurrentMovementGeneratorType() != FLIGHT_MOTION_TYPE;
+}
+
+bool MovementAction::IsInMeleeRange(Unit* target) const
+{
+    // Out-of-line on purpose: the header is included by translation units that have
+    // not pulled in Unit.h yet, and this needs the complete Player.
+    return target != nullptr && bot->IsWithinMeleeRange(target);
+}
+
+float MovementAction::GetMeleeApproachDistance(Unit* target) const
+{
+    if (!target)
+        return sPlayerbotAIConfig.meleeDistance;
+
+    return ComputeMeleeStopDistance(bot->GetMeleeRange(target), bot->GetDistance(target),
+            bot->GetPositionZ() - target->GetPositionZ(), sPlayerbotAIConfig.meleeDistance);
+}
+
+bool MovementAction::ApproachForMelee(Unit* target)
+{
+    if (!target)
+        return false;
+
+    if (IsInMeleeRange(target))
+        return true;
+
+    if (!IsMovingAllowed(target))
+        return false;
+
+    return MoveTo(target, GetMeleeApproachDistance(target));
 }
 
 bool MovementAction::Follow(Unit* target, float distance)

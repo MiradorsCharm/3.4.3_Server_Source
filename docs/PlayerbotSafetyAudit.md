@@ -135,8 +135,11 @@ multithreaded safety, or compatibility with a particular database/client build.
   filename/parent resolution, generator coordinate errors and bot spawn queries.
   Remaining opcode/script/data warnings still need their affected IDs; no
   blanket data replacement is justified from a file-placement warning.
-- The bundled 50-name pool cannot supply a 200-character population. Add valid
-  unused names as needed; no account/database reset is required by these fixes.
+- The bundled 50-name pool cannot supply a 200-character population, and the bots
+  no longer generate names to cover the difference (that auto-fill was removed:
+  it wrote rows on every creation retry and spammed a validation error per rejected
+  name). Add valid unused names to `ai_playerbot_names` as needed; no
+  account/database reset is required by these fixes.
 - Some compatibility AhBot fields still do nothing: `Enabled` and
   `UnderPriceProbability` do not implement the unported auction-house bot.
   `MaxItemLevel`, `MaxRequiredLevel` and `IgnoreItems` **do** filter guild-task

@@ -134,7 +134,7 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed)
     if (!sPlayerbotAIConfig.randomBotAutologin || !sPlayerbotAIConfig.enabled)
         return;
 
-    TC_LOG_INFO("playerbot",  "Processing random bots...");
+    TC_LOG_DEBUG("playerbot",  "Processing random bots...");
 
     uint32 maxAllowedBotCount = GetEventValue(0, "bot_count");
     if (!maxAllowedBotCount)
@@ -214,10 +214,12 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed)
             botProcessed++;
     }
 
-    TC_LOG_INFO("playerbot",  "{} bots processed. Next check in {} seconds",
+    TC_LOG_DEBUG("playerbot",  "{} bots processed. Next check in {} seconds",
             botProcessed, sPlayerbotAIConfig.randomBotUpdateInterval);
 
-    PrintStats();
+    // The per-tick population dump used to sit here: twenty INFO lines every minute
+    // on top of the per-bot lines. The breakdown is operator-facing output, so it
+    // keeps its INFO level and is printed when it is asked for (.rndbot stats).
 }
 
 uint32 RandomPlayerbotMgr::AddRandomBot(vector<uint32>& bots)
@@ -255,7 +257,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
 		Player* player = GetPlayerBot(ObjectGuid::Create<HighGuid::Player>(bot));
 		if (!player || !player->GetGroup())
 		{
-			TC_LOG_INFO("playerbot",  "Bot {} expired", bot);
+			TC_LOG_DEBUG("playerbot",  "Bot {} expired", bot);
 			SetEventValue(bot, "add", 0, 0);
 		}
         return true;
@@ -281,7 +283,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
 
     if (player->GetGroup())
     {
-        TC_LOG_INFO("playerbot",  "Skipping bot {} as it is in group", bot);
+        TC_LOG_DEBUG("playerbot",  "Skipping bot {} as it is in group", bot);
         return false;
     }
 
@@ -289,7 +291,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     {
         if (!GetEventValue(bot, "dead"))
         {
-            TC_LOG_INFO("playerbot",  "Setting dead flag for bot {}", bot);
+            TC_LOG_DEBUG("playerbot",  "Setting dead flag for bot {}", bot);
             uint32 randomTime = urand(sPlayerbotAIConfig.minRandomBotReviveTime, sPlayerbotAIConfig.maxRandomBotReviveTime);
             SetEventValue(bot, "dead", 1, randomTime);
             // guard the -60 offset: a revive time below 60 would wrap the uint32
@@ -300,7 +302,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
 
         if (!GetEventValue(bot, "revive"))
         {
-            TC_LOG_INFO("playerbot",  "Reviving dead bot {}", bot);
+            TC_LOG_DEBUG("playerbot",  "Reviving dead bot {}", bot);
             SetEventValue(bot, "dead", 0, 0);
             SetEventValue(bot, "revive", 0, 0);
             RandomTeleport(player, player->GetMapId(), player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
@@ -321,7 +323,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     uint32 randomize = GetEventValue(bot, "randomize");
     if (!randomize)
     {
-        TC_LOG_INFO("playerbot",  "Randomizing bot {}", bot);
+        TC_LOG_DEBUG("playerbot",  "Randomizing bot {}", bot);
         Randomize(player);
         uint32 randomTime = urand(sPlayerbotAIConfig.minRandomBotRandomizeTime, sPlayerbotAIConfig.maxRandomBotRandomizeTime);
         ScheduleRandomize(bot, randomTime);
@@ -331,7 +333,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     uint32 logout = GetEventValue(bot, "logout");
     if (!logout)
     {
-        TC_LOG_INFO("playerbot",  "Logging out bot {}", bot);
+        TC_LOG_DEBUG("playerbot",  "Logging out bot {}", bot);
         LogoutPlayerBot(ObjectGuid::Create<HighGuid::Player>(bot));
         SetEventValue(bot, "logout", 1, sPlayerbotAIConfig.maxRandomBotInWorldTime);
         return true;
@@ -340,7 +342,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     uint32 teleport = GetEventValue(bot, "teleport");
     if (!teleport)
     {
-        TC_LOG_INFO("playerbot",  "Random teleporting bot {}", bot);
+        TC_LOG_DEBUG("playerbot",  "Random teleporting bot {}", bot);
         RandomTeleportForLevel(ai->GetBot());
         SetEventValue(bot, "teleport", 1, sPlayerbotAIConfig.maxRandomBotInWorldTime);
         return true;
@@ -399,7 +401,7 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, vector<WorldLocation> &locs
         // Requiring a navmesh polygon at the grind offset therefore rejects valid
         // creature-spawn destinations and logs a false mmap error even when
         // bots already walk with MotionMaster pathfinding after spawn.
-        TC_LOG_INFO("playerbot",  "Random teleporting bot {} to {} {},{},{} (1/{} locations)",
+        TC_LOG_DEBUG("playerbot",  "Random teleporting bot {} to {} {},{},{} (1/{} locations)",
                 bot->GetName().c_str(), area->AreaName[LOCALE_enUS], x, y, z, locs.size());
 
         bot->GetMotionMaster()->Clear();
@@ -421,7 +423,7 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
         return;
     }
 
-    TC_LOG_INFO("playerbot",  "Preparing location to random teleporting bot {} for level {}", bot->GetName().c_str(), bot->GetLevel());
+    TC_LOG_DEBUG("playerbot",  "Preparing location to random teleporting bot {} for level {}", bot->GetName().c_str(), bot->GetLevel());
 
     // levels are tried exactly once per server run: an empty candidate list
     // must not re-run the full creature scan on every teleport of a bot with
@@ -438,7 +440,7 @@ void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 
 void RandomPlayerbotMgr::RandomTeleport(Player* bot, uint16 mapId, float teleX, float teleY, float teleZ)
 {
-    TC_LOG_INFO("playerbot",  "Preparing location to random teleporting bot {}", bot->GetName().c_str());
+    TC_LOG_DEBUG("playerbot",  "Preparing location to random teleporting bot {}", bot->GetName().c_str());
 
     vector<WorldLocation> locs;
     float radius = sPlayerbotAIConfig.randomBotTeleportDistance / 2.0f;
@@ -566,7 +568,7 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     if (!bot || !bot->GetPlayerbotAI())
         return;
 
-    TC_LOG_INFO("playerbot",  "Refreshing bot {}", bot->GetName().c_str());
+    TC_LOG_DEBUG("playerbot",  "Refreshing bot {}", bot->GetName().c_str());
     if (bot->isDead())
     {
         bot->ResurrectPlayer(1.0f);
