@@ -38,6 +38,19 @@ public:
     /// called once when the bot is fully idle out of combat
     virtual void IdleTick(BotAI& ai) { }
 
+    // --- party services (see BotAI::UpdatePartyCare) ---------------------------
+    /// resurrect a dead party member (healers); called out of the combat pass
+    virtual void RezTick(BotAI& ai) { (void)ai; }
+    /// cure/dispel a party member (all classes with a cleanse)
+    virtual void CureTick(BotAI& ai) { (void)ai; }
+    /// party buffs, out of combat only (combat GCDs belong to the rotation)
+    virtual void BuffTick(BotAI& ai) { (void)ai; }
+
+    /// true when the class can fill the tank role ("tank" command)
+    virtual bool CanTank() const { return false; }
+    /// taunt/presence upkeep, called right before CombatTick in tank mode
+    virtual void TankTick(BotAI& ai) { (void)ai; }
+
     /// wand shoot (5019), auto shot (75), or 0 for none
     virtual uint32 GetAutoRepeatSpell() const { return 0; }
     /// shortest distance at which the ranged attack can fire (ranged classes)
@@ -60,6 +73,8 @@ protected:
     /// victim already has this (rank-correct) aura?
     bool VictimHasAura(uint32 spellId) const;
     bool SelfHasAura(uint32 spellId) const;
+    /// any unit already has this (rank-correct) aura?
+    bool UnitHasAura(uint32 spellId, Unit* who) const;
 
     BotAI* _ai;
 };

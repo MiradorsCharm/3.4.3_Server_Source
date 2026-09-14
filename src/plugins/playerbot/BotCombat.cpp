@@ -125,6 +125,8 @@ void BotCombat::Update(uint32 diff)
     if (_castPaceCooldown == 0 && !_ai->GetSpells().IsHardCasting())
     {
         _castPaceCooldown = 600;
+        if (_ai->IsTankMode())
+            _ai->GetClassAI().TankTick(*_ai);   // taunts/presence before the rotation
         _ai->GetClassAI().CombatTick(*_ai);
     }
 }

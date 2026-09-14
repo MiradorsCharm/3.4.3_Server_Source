@@ -17,6 +17,8 @@ of bug violated:
   4. the auto-repeat wand/auto-shot loop is started through the real spell
   5. every core hook is registered in BotManager::Initialize
   6. the config loader reads every key documented in worldserver.conf.dist
+  7. the party services (rez/cure/buff/tank/grind/consume), persistence and
+     class-script override points exist
 
 Run:  python tests/playerbot_wiring_test.py -v
 """
@@ -179,6 +181,68 @@ class ConfigWiringTest(unittest.TestCase):
         undocumented = sorted(read - documented)
         self.assertEqual(undocumented, [],
                          f"keys read by BotConfig but missing from worldserver.conf.dist: {undocumented}")
+
+
+class PartyServicesTest(unittest.TestCase):
+    """The 'full rewrite' feature set: party care, consume, grind, roles,
+    persistence. These are the guarantees that the expansion actually wired
+    everything into the per-tick brain."""
+
+    def test_party_care_pipeline_is_wired(self):
+        text = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        for needle in ("UpdatePartyCare", "UpdateConsume", "UpdateGrind",
+                       "FindDeadPartyMember", "FindDispelTarget", "TryConsume",
+                       "RezTick", "CureTick", "BuffTick"):
+            self.assertIn(needle, text, f"party service {needle} missing from the brain")
+
+    def test_class_scripts_have_override_points(self):
+        text = (PLUGIN / "BotClassAI.h").read_text(encoding="utf-8", errors="replace")
+        for needle in ("virtual void RezTick", "virtual void CureTick",
+                       "virtual void BuffTick", "virtual void TankTick",
+                       "virtual bool CanTank"):
+            self.assertIn(needle, text)
+
+    def test_healers_resurrect(self):
+        for cls in ("Priest", "Paladin", "Shaman", "Druid"):
+            text = (PLUGIN / f"BotClass{cls}.cpp").read_text(encoding="utf-8", errors="replace")
+            self.assertIn("void RezTick(BotAI& ai) override", text, f"{cls} cannot resurrect")
+
+    def test_tanks_have_tank_tick(self):
+        for cls in ("Warrior", "Paladin", "DeathKnight", "Druid"):
+            text = (PLUGIN / f"BotClass{cls}.cpp").read_text(encoding="utf-8", errors="replace")
+            self.assertIn("bool CanTank() const override { return true; }", text)
+            self.assertIn("void TankTick(BotAI& ai) override", text)
+
+    def test_tank_tick_runs_in_combat_pipeline(self):
+        text = (PLUGIN / "BotCombat.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("IsTankMode()", text)
+        self.assertIn("TankTick", text)
+
+    def test_mage_conjures_food_and_water(self):
+        text = (PLUGIN / "BotClassMage.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("HasConsumable(false)", text)
+        self.assertIn("HasConsumable(true)", text)
+
+    def test_hunter_pet_care(self):
+        text = (PLUGIN / "BotClassHunter.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("REVIVE_PET", text)
+
+    def test_bot_bindings_persist_and_relogin(self):
+        manager = (PLUGIN / "BotManager.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("LoadBotsForMaster", manager)
+        self.assertIn("PersistBot", manager)
+        self.assertIn("hooks.OnPlayerLogin = &HookPlayerLogin", manager)
+        commands = (PLUGIN / "BotCommands.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("PersistBot", commands)
+        self.assertIn("ForgetBot", commands)
+        sql = (REPO / "sql" / "custom" / "playerbot" / "characters_playerbot.sql").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("characters_playerbot", sql)
+
+    def test_upgrade_and_repair_commands_exist(self):
+        factory = (PLUGIN / "BotFactory.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("bool UpgradeGear(Player* bot)", factory)
+        ai = (PLUGIN / "BotAI.cpp").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("DurabilityRepairAll", ai)
 
 
 if __name__ == "__main__":

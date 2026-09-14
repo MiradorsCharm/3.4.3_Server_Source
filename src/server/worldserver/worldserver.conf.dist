@@ -4582,6 +4582,22 @@ AiPlayerbot.AutoAssistMaster = 1
 
 AiPlayerbot.ReviveDelayMs = 5000
 
+#    AiPlayerbot.EatDrinkPct
+#        Description: Bots eat and drink out of combat when their health (or
+#                     mana) drops below this percentage. Set 0 to disable
+#                     idle eating entirely.
+#        Default:     50
+
+AiPlayerbot.EatDrinkPct = 50
+
+#    AiPlayerbot.Grind
+#        Description: Random bots attack nearby non-elite mobs while wandering
+#                     so they act like players grinding. Master-bound bots only
+#                     grind when ordered to ("grind" / "stop grind").
+#        Default:     1 (on)
+
+AiPlayerbot.Grind = 1
+
 #
 #    AiPlayerbot.RandomBotCount
 #        Description: How many random bots should be online. 0 disables the

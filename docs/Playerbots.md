@@ -146,7 +146,9 @@ Distances: `SightDistance`, `SpellDistance`, `LootDistance`, `WanderRadius`,
 
 * `.bot add <name> [master-name]` - log an existing character in as a bot.
   With a master (or the character of the player running the command), the bot
-  is summoned next to the master and accepts their whispers.
+  is summoned next to the master and accepts their whispers. The binding is
+  **persisted** (`characters_playerbot` table): the next time the master logs
+  in, their bots re-join automatically. `.bot remove` clears the binding.
 * `.bot remove <name>` / `.bot removeall` / `.bot list` / `.bot info <name>`
 * `.bot rndbot` - show the random bot target/count.
 * `.bot rndbot` selection: the manager audits the pool every
@@ -154,7 +156,9 @@ Distances: `SightDistance`, `SpellDistance`, `LootDistance`, `WanderRadius`,
   `RandomBotCount`, and creates fresh bot accounts/characters when short.
   Fresh characters are leveled into the configured band, given class spells,
   a usable weapon (plus shield/ranged/ammo as appropriate), armor, and a
-  little money - see `BotFactory`.
+  little money - see `BotFactory`. Random bots wander, **grind nearby
+  non-elite mobs**, loot their kills, eat and drink after fights, and level
+  from the XP like any player.
 
 ### Whisper commands
 
@@ -169,13 +173,36 @@ Whisper the bot (or use party/raid chat if you are its master):
 | `assist` | attack the sender's victim |
 | `stop attack` | disengage |
 | `loot` | loot our kills |
-| `heal` | run a heal pass |
+| `heal` | run a heal pass (party, not just self) |
+| `buff` | cast class buffs on the party now |
+| `rez` | resurrect a dead party member (healers) |
+| `cure` / `dispel` | cure/dispel the party |
+| `eat` / `drink` | consume food/water from bags now |
+| `upgrade` | equip the best item-level gear from the bot's bags |
+| `repair` | repair the bot's gear |
+| `tank` | tank role: taunt/presence upkeep (tank-capable classes) |
+| `dps` | back to damage role |
+| `grind` / `stop grind` | attack nearby mobs while idle |
 | `status` | one-line self report |
 | `release` | speed up self-resurrection |
 | `help` | the list |
 
 Without a bound master, a bot accepts commands from anyone on its own
 account; GMs can always command.
+
+### What bots do on their own
+
+* **Fight**: assist the master's fight, retaliate against attackers, and
+  (when ordered, or always for random bots) grind nearby non-elite mobs.
+* **Party care pass** (every 2s): resurrect dead members (healers), cure
+  poison/disease/curse/magic debuffs, keep party buffs up out of combat,
+  and heal injured party members in and out of combat.
+* **Self care**: eat and drink out of combat when below
+  `AiPlayerbot.EatDrinkPct` (mages conjure their own food/water), revive
+  their hunter pet, resurrect when requested by a healer, self-resurrect
+  after `ReviveDelayMs`.
+* **Loot**: corpses of their own kills are queued and looted
+  automatically.
 
 ## 7. Combat behaviour
 

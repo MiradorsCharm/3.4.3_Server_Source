@@ -52,6 +52,11 @@ bool BotClassAI::SelfHasAura(uint32 spellId) const
     return spellId && _ai->GetBot()->HasAura(spellId);
 }
 
+bool BotClassAI::UnitHasAura(uint32 spellId, Unit* who) const
+{
+    return spellId && who && who->HasAura(spellId, _ai->GetBot()->GetGUID());
+}
+
 Unit* BotClassAI::FindHealTarget(float healthPct, float range) const
 {
     Player* bot = _ai->GetBot();

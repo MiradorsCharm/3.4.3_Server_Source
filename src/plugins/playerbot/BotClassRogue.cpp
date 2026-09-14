@@ -1,8 +1,8 @@
 /*
  * Playerbot AI - rogue.
  *
- * Build combo points with Sinister Strike (or Mutilate with daggers), finish
- * with Eviscerate, keep Slice and Dice up when fights last, Kick interrupts.
+ * Sinister Strike/Mutilate builders into Eviscerate/Rupture, Slice and Dice
+ * upkeep, Kick interrupts and Evasion as the survival button.
  */
 
 #include "BotClassAI.h"
@@ -18,12 +18,11 @@ namespace
     constexpr uint32 MUTILATE[] = { 1329, 34411, 34412, 34413, 48665, 48666 };
     constexpr uint32 BACKSTAB[] = { 53, 2589, 2590, 2591, 7796, 8721, 11279, 11280, 11281, 25301, 26863, 48656, 48657 };
     constexpr uint32 EVISCERATE[] = { 2098, 6760, 6761, 6762, 8623, 8624, 11299, 11300, 31015, 26865, 48668, 48669 };
-    constexpr uint32 SLICE_AND_DICE[] = { 5171, 6774, 1725 };
+    constexpr uint32 SLICE_AND_DICE[] = { 6774 };
     constexpr uint32 RUPTURE[] = { 1943, 8639, 8640, 11273, 11274, 11275, 26867, 48671, 48672 };
     constexpr uint32 KICK[] = { 1766, 1767, 1768, 1769, 38768 };
-    constexpr uint32 STEALTH[] = { 1784, 1785, 1786, 1787 };
-    constexpr uint32 DEADLY_POISON[] = { 2823, 2818, 2819, 11353, 11354, 11355, 25347, 26867, 57993, 57994 };
-    constexpr uint32 SAP[] = { 6770, 2070, 11297, 6770 };
+    constexpr uint32 EVASION[] = { 5277 };
+    constexpr uint32 VANISH[] = { 1856 };
 }
 
 class BotClassRogueAI : public BotClassAI
@@ -38,6 +37,12 @@ public:
         if (!victim)
             return;
 
+        // last-ditch survival
+        if (bot->GetHealthPct() < 40.0f && !SelfHasAura(Rank(EVASION)) && bot->GetPower(POWER_ENERGY) >= 10)
+            CastOnSelf(Rank(EVASION));
+        if (bot->GetHealthPct() < 15.0f && CastOnSelf(Rank(VANISH)))
+            return;
+
         // interrupt the victim when it starts a hard cast
         if (victim->IsNonMeleeSpellCast(false))
             if (CastOnVictim(Rank(KICK)))
@@ -45,7 +50,7 @@ public:
 
         // upkeep: slice and dice once we have points and it fell off
         if (!SelfHasAura(Rank(SLICE_AND_DICE)))
-            if (bot->GetPower(POWER_ENERGY) >= 25)
+            if (bot->GetPower(POWER_ENERGY) >= 25 && bot->GetComboPoints() >= 1)
                 if (CastOnSelf(Rank(SLICE_AND_DICE)))
                     return;
 

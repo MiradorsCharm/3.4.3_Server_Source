@@ -50,6 +50,8 @@ public:
     /// Combat behaviour.
     bool AutoAssistMaster = true;    // bots join a group fight started by their master
     uint32 ReviveDelayMs = 5000;     // dead bots resurrect themselves after this long
+    uint32 EatDrinkPct = 50;         // bots eat/drink when below this % (out of combat)
+    bool Grind = true;               // random bots fight nearby mobs while wandering
 
     /// Random bot pool.
     uint32 RandomBotCount = 0;       // how many random bots should be online (0 = feature off)

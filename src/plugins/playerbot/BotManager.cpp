@@ -147,6 +147,7 @@ void BotManager::ProcessPendingLogins()
             BotAI* ai = new BotAI(bot);
             bot->SetBotAI(ai);
             ai->SetRandomBot(pending.random);
+            ai->SetGrind(pending.random && sBotConfig->Grind);
 
             // Gear/spell prep first (it saves the character), then the
             // summon - otherwise the save races the pending teleport.
@@ -552,6 +553,52 @@ void BotManager::RouteChat(QueuedChat const& chat)
 }
 
 // ---------------------------------------------------------------------------
+// persistence
+// ---------------------------------------------------------------------------
+
+void BotManager::PersistBot(ObjectGuid botGuid, ObjectGuid masterGuid)
+{
+    if (botGuid.IsEmpty() || masterGuid.IsEmpty())
+        return;
+    CharacterDatabase.PExecute(
+        "REPLACE INTO characters_playerbot (guid, master) VALUES ({}, {})",
+        botGuid.GetCounter(), masterGuid.GetCounter());
+}
+
+void BotManager::ForgetBot(ObjectGuid botGuid)
+{
+    if (botGuid.IsEmpty())
+        return;
+    CharacterDatabase.PExecute(
+        "DELETE FROM characters_playerbot WHERE guid = {}", botGuid.GetCounter());
+}
+
+void BotManager::LoadBotsForMaster(Player* master)
+{
+    if (!master || !sBotConfig->Enabled)
+        return;
+
+    QueryResult result = CharacterDatabase.PQuery(
+        "SELECT guid FROM characters_playerbot WHERE master = {}", master->GetGUID().GetCounter());
+    if (!result)
+        return;
+
+    uint32 loaded = 0;
+    do
+    {
+        ObjectGuid::LowType low = result->Fetch()[0].GetUInt64();
+        ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(low);
+        if (!guid.IsPlayer())
+            continue;
+        if (AddBot(guid, master->GetGUID(), false))
+            ++loaded;
+    } while (result->NextRow() && loaded < 5);
+
+    if (loaded)
+        TC_LOG_INFO("playerbot", "{} bot(s) re-joined {} on login", loaded, master->GetName());
+}
+
+// ---------------------------------------------------------------------------
 // init / shutdown
 // ---------------------------------------------------------------------------
 
@@ -614,6 +661,25 @@ namespace
         }
     }
 
+    void HookPlayerLogin(Player* player)
+    {
+        // a bot's own login must not recurse into the bot loader
+        if (!player || player->GetBotAI() || player->GetSession()->IsBotSession())
+            return;
+        try
+        {
+            sBotManager->LoadBotsForMaster(player);
+        }
+        catch (std::exception const& e)
+        {
+            TC_LOG_ERROR("playerbot", "Bot auto-login for {} failed: {}", player->GetName(), e.what());
+        }
+        catch (...)
+        {
+            TC_LOG_ERROR("playerbot", "Bot auto-login for {} failed with an unknown exception", player->GetName());
+        }
+    }
+
     void HookPlayerDelete(Player* player)
     {
         // Player is going away (possibly on a map thread): detach the AI so
@@ -641,7 +707,16 @@ bool BotManager::Initialize()
     hooks.OnBotPacketSent = &HookBotPacketSent;
     hooks.OnPlayerChat = &HookPlayerChat;
     hooks.OnPlayerDelete = &HookPlayerDelete;
+    hooks.OnPlayerLogin = &HookPlayerLogin;
     Playerbot::SetEnabled(true);
+
+    // bot->master bindings for auto re-login; also in the schema sql file
+    CharacterDatabase.Execute(
+        "CREATE TABLE IF NOT EXISTS characters_playerbot ("
+        "guid INT UNSIGNED NOT NULL,"
+        "master INT UNSIGNED NOT NULL,"
+        "PRIMARY KEY(guid)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
     // ensure the names table exists so random bot creation works out of the box
     CharacterDatabase.Execute(

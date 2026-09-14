@@ -61,6 +61,14 @@ public:
     /// group invites: bots accept invites from their master automatically
     void HandleGroupInviteChanged(Player* bot);
 
+    // --- persistence -----------------------------------------------------------
+    /// remember a bot->master binding so the master's next login re-adds it
+    void PersistBot(ObjectGuid botGuid, ObjectGuid masterGuid);
+    /// forget the binding (".bot remove")
+    void ForgetBot(ObjectGuid botGuid);
+    /// re-add every persisted bot of this master (called from OnPlayerLogin)
+    void LoadBotsForMaster(Player* master);
+
     // --- random bot pool ------------------------------------------------------
     void AuditRandomBots();               // keep ~N online
     uint32 GetRandomBotTarget() const;

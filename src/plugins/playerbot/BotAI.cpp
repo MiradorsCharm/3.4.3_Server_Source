@@ -2,16 +2,29 @@
 
 #include "BotConfig.h"
 #include "BotDiagnostics.h"
+#include "BotFactory.h"
 #include "Player.h"
 #include "Unit.h"
 #include "Creature.h"
+#include "Pet.h"
+#include "Item.h"
+#include "ItemTemplate.h"
+#include "Container/Bag.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "SpellAuraDefines.h"
+#include "Grids/Notifiers/GridNotifiers.h"
+#include "Grids/Cells/Cell.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "Group.h"
+#include "GroupReference.h"
 #include "WorldSession.h"
 #include "Server/Packets/PartyPackets.h"
 #include "Log.h"
 #include "Util.h"
+
+#include <algorithm>
 
 BotAI::BotAI(Player* bot) : _bot(bot)
 {
@@ -56,6 +69,82 @@ bool BotAI::AcceptsCommandsFrom(Player* sender) const
     return false;
 }
 
+namespace
+{
+    // the use-spell of a food (drink=false) / water (drink=true) item in the
+    // bags, resolved through the same ItemEffect entries CastItemUseSpell
+    // walks - 0 when none found
+    uint32 ConsumableSpellFor(Player* bot, Item* item, bool drink)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || proto->GetClass() != ITEM_CLASS_CONSUMABLE)
+            return 0;
+        if (bot->CanUseItem(proto, false) != EQUIP_ERR_OK)
+            return 0;
+
+        for (ItemEffectEntry const* effect : proto->Effects)
+        {
+            if (!effect->SpellID || effect->TriggerType != ITEM_SPELLTRIGGER_ON_USE)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(effect->SpellID, DIFFICULTY_NONE);
+            if (!info)
+                continue;
+            if (drink ? info->HasAura(SPELL_AURA_MOD_POWER_REGEN) : info->HasAura(SPELL_AURA_MOD_REGEN))
+                return effect->SpellID;
+        }
+        return 0;
+    }
+
+    uint32 FindConsumableSpell(Player* bot, bool drink)
+    {
+        for (uint8 i = 0; i < 4; ++i)                       // equipped bags
+            if (Bag* bag = bot->GetBagByPos(i))
+                for (uint8 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    if (Item* item = bag->GetItemByPos(slot))
+                        if (uint32 spell = ConsumableSpellFor(bot, item, drink))
+                            return spell;
+
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)  // backpack
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                if (uint32 spell = ConsumableSpellFor(bot, item, drink))
+                    return spell;
+
+        return 0;
+    }
+
+    // nearest grindable mob: alive non-elite creature in a sane level window,
+    // not already fighting, attackable by us
+    struct GrindTargetCheck
+    {
+        WorldObject const* obj;
+        Player const* bot;
+        mutable float range;
+
+        GrindTargetCheck(WorldObject const* o, Player const* b, float r) : obj(o), bot(b), range(r) { }
+
+        bool operator()(Unit* u) const
+        {
+            if (!u || !u->IsAlive() || !u->IsInWorld())
+                return false;
+            Creature* c = u->ToCreature();
+            if (!c || c->IsCritter() || c->IsTotem() || c->IsPet() || c->IsElite())
+                return false;
+            if (c->IsInCombat())
+                return false;
+            if (int32(u->GetLevel()) - int32(bot->GetLevel()) > 3)
+                return false;
+            if (int32(u->GetLevel()) + 15 < int32(bot->GetLevel()))
+                return false;
+            if (!bot->IsValidAttackTarget(u))
+                return false;
+            if (!obj->IsWithinDist(u, range) || !obj->CanSeeOrDetect(u))
+                return false;
+            range = obj->GetDistance(u);        // narrow: the next hit must be closer
+            return true;
+        }
+    };
+}
+
 // ---------------------------------------------------------------------------
 // orders
 // ---------------------------------------------------------------------------
@@ -95,10 +184,32 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
         CommandAssist(sender);
     else if (startsWith("stop attack") || startsWith("stopattack"))
         CommandStopAttack();
+    else if (startsWith("stop grind"))
+        CommandGrind(false);
     else if (startsWith("loot"))
         CommandLoot();
     else if (startsWith("heal"))
         CommandHeal();
+    else if (startsWith("buff"))
+        CommandBuff();
+    else if (startsWith("rez") || startsWith("resurrect") || command == "res")
+        CommandRez();
+    else if (startsWith("cure") || startsWith("dispel"))
+        CommandCure();
+    else if (startsWith("drink"))
+        CommandDrink();
+    else if (startsWith("eat"))
+        CommandEat();
+    else if (startsWith("upgrade"))
+        CommandUpgrade();
+    else if (startsWith("repair"))
+        CommandRepair();
+    else if (startsWith("tank"))
+        CommandTank();
+    else if (startsWith("dps"))
+        CommandDps();
+    else if (startsWith("grind"))
+        CommandGrind(true);
     else if (startsWith("status"))
         CommandStatus(sender);
     else if (startsWith("release"))
@@ -107,7 +218,7 @@ void BotAI::HandleCommand(std::string const& msg, Player* sender)
             _deadTimer = sBotConfig->ReviveDelayMs;  // fast-path the self-res
     }
     else if (startsWith("help"))
-        WhisperMaster("I understand: follow, stay, come, attack my target, assist, stop attack, loot, heal, status, release");
+        WhisperMaster("I understand: follow, stay, come, attack my target, assist, stop attack, loot, heal, buff, rez, cure, eat, drink, upgrade, repair, tank, dps, grind, stop grind, status, release");
     else
         WhisperMaster("I don't know that command - whisper 'help' for the list");
 }
@@ -203,6 +314,81 @@ void BotAI::CommandHeal()
     _lastOrder = "heal";
 }
 
+void BotAI::CommandBuff()
+{
+    _partyCareCooldown = 0;
+    _classAI->BuffTick(*this);
+    _lastOrder = "buff";
+}
+
+void BotAI::CommandRez()
+{
+    _partyCareCooldown = 0;
+    _classAI->RezTick(*this);
+    _lastOrder = "rez";
+}
+
+void BotAI::CommandCure()
+{
+    _partyCareCooldown = 0;
+    _classAI->CureTick(*this);
+    _lastOrder = "cure";
+}
+
+void BotAI::CommandEat()
+{
+    _forceConsumeTimer = 30000;
+    _consumeCooldown = 0;
+    _lastOrder = "eat";
+}
+
+void BotAI::CommandDrink()
+{
+    _forceConsumeTimer = 30000;
+    _consumeCooldown = 0;
+    _lastOrder = "drink";
+}
+
+void BotAI::CommandUpgrade()
+{
+    WhisperMaster(BotFactory::UpgradeGear(_bot) ? "upgraded my gear from my bags"
+                                                : "nothing in my bags is an upgrade");
+    _lastOrder = "upgrade";
+}
+
+void BotAI::CommandRepair()
+{
+    _bot->DurabilityRepairAll(true, 1.0f, false);
+    WhisperMaster("gear repaired");
+    _lastOrder = "repair";
+}
+
+void BotAI::CommandTank()
+{
+    if (!CanTank())
+    {
+        WhisperMaster("I am not built for tanking");
+        return;
+    }
+    _tankMode = true;
+    WhisperMaster("tank mode on - keep the fight on me");
+    _lastOrder = "tank";
+}
+
+void BotAI::CommandDps()
+{
+    _tankMode = false;
+    WhisperMaster("dps mode");
+    _lastOrder = "dps";
+}
+
+void BotAI::CommandGrind(bool on)
+{
+    _grindMode = on;
+    WhisperMaster(on ? "grinding mobs nearby" : "grind off");
+    _lastOrder = on ? "grind" : "stop grind";
+}
+
 void BotAI::CommandStatus(Player* to)
 {
     if (!to)
@@ -219,6 +405,101 @@ void BotAI::CommandStatus(Player* to)
     if (Unit* master = GetMaster())
         text += ", master " + master->GetName();
     _bot->Whisper(text, LANG_UNIVERSAL, to);
+}
+
+// ---------------------------------------------------------------------------
+// party services
+// ---------------------------------------------------------------------------
+
+std::vector<Unit*> BotAI::GetPartyUnits(float maxDist, bool includePets) const
+{
+    std::vector<Unit*> roster;
+    auto consider = [&](Unit* who)
+    {
+        if (!who || !who->IsInWorld() || !who->IsAlive() || !_bot->IsInMap(who))
+            return;
+        if (_bot->GetExactDist(who) > maxDist)
+            return;
+        if (std::find(roster.begin(), roster.end(), who) != roster.end())
+            return;
+        roster.push_back(who);
+        if (!includePets)
+            return;
+        if (Player* p = who->ToPlayer())
+            if (Pet* pet = p->GetPet())
+                if (pet->IsInWorld() && pet->IsAlive() && _bot->IsInMap(pet) && _bot->GetExactDist(pet) <= maxDist)
+                    roster.push_back(pet->ToUnit());
+    };
+
+    if (Group* group = _bot->GetGroup())
+        for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            consider(itr->GetSource());
+    else if (Player* master = GetMaster())
+        consider(master);
+
+    return roster;
+}
+
+Unit* BotAI::FindDeadPartyMember(float range) const
+{
+    Unit* best = nullptr;
+    float bestDist = range;
+    auto consider = [&](Unit* who)
+    {
+        if (!who || who->IsAlive() || !who->IsInWorld() || !_bot->IsInMap(who))
+            return;
+        if (Player* p = who->ToPlayer())
+            if (p->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+                return;     // released spirit - no body to resurrect
+        float const d = _bot->GetExactDist(who);
+        if (d <= range && d < bestDist)
+        {
+            bestDist = d;
+            best = who;
+        }
+    };
+
+    if (Group* group = _bot->GetGroup())
+        for (GroupReference const* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            consider(itr->GetSource());
+    else if (Player* master = GetMaster())
+        consider(master);
+
+    return best;
+}
+
+Unit* BotAI::FindDispelTarget(uint32 dispelMask, float range) const
+{
+    for (Unit* who : GetPartyUnits(range, false))
+    {
+        DispelChargesList dispelList;
+        who->GetDispellableAuraList(_bot, dispelMask, dispelList);
+        if (!dispelList.empty())
+            return who;
+    }
+    return nullptr;
+}
+
+bool BotAI::HasConsumable(bool drink) const
+{
+    return FindConsumableSpell(_bot, drink) != 0;
+}
+
+bool BotAI::TryConsume(bool drink)
+{
+    uint32 const spellId = FindConsumableSpell(_bot, drink);
+    if (!spellId)
+        return false;
+
+    // sit down like a real player; the next SendStart stands us back up
+    _bot->SetStandState(UNIT_STAND_STATE_SIT);
+    _bot->CastSpell(_bot, spellId, true);
+    return true;
+}
+
+bool BotAI::CanTank() const
+{
+    return _classAI->CanTank();
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +546,17 @@ void BotAI::UpdateDeath(uint32 diff)
     }
 
     _deadTimer += diff;
+
+    // A healer's resurrection beats the self-res timer; bot members accept it
+    // right away (a real player clicks the dialog - ResurrectUsingRequestData
+    // is the handler behind that click).
+    if (_bot->IsInWorld() && _bot->IsResurrectRequested())
+    {
+        _bot->ResurrectUsingRequestData();
+        _deadTimer = 0;
+        return;
+    }
+
     if (_deadTimer < sBotConfig->ReviveDelayMs)
         return;
 
@@ -336,7 +628,90 @@ void BotAI::UpdateBrain(uint32 diff)
     if (_loot->HasWork())
         return;
 
+    // party services first (rez > cure > buffs), then keep ourselves fed,
+    // then pick a fight (grind mode) - the follow/stay/wander pass runs last
+    UpdatePartyCare(diff);
+    UpdateConsume(diff);
+    UpdateGrind(diff);
+
     UpdateNonCombat(diff);
+}
+
+void BotAI::UpdatePartyCare(uint32 diff)
+{
+    if (_partyCareCooldown > diff)
+    {
+        _partyCareCooldown -= diff;
+        return;
+    }
+    _partyCareCooldown = 2000;
+
+    // resurrection outranks everything: a dead member contributes nothing
+    _classAI->RezTick(*this);
+
+    // debuffs next - they do damage or disable
+    _classAI->CureTick(*this);
+
+    // buffs only out of combat; in combat the GCDs belong to the rotation
+    if (!_combat->HasVictim() && !_bot->IsInCombat())
+        _classAI->BuffTick(*this);
+}
+
+void BotAI::UpdateConsume(uint32 diff)
+{
+    if (_consumeCooldown > diff)
+    {
+        _consumeCooldown -= diff;
+        return;
+    }
+    _consumeCooldown = 2000;
+
+    bool const forced = _forceConsumeTimer > 0;
+    if (forced)
+        _forceConsumeTimer = _forceConsumeTimer > diff ? _forceConsumeTimer - diff : 0;
+
+    if (_combat->HasVictim() || _bot->IsInCombat())
+        return;
+    if (_movement->IsMoving() || _movement->HasLiveGoal())
+        return;     // eat/drink only while safely standing still
+
+    float const threshold = forced ? 100.0f : float(sBotConfig->EatDrinkPct);
+    bool const hungry = forced || _bot->GetHealthPct() < threshold;
+    bool const thirsty = forced || (_bot->GetPowerType() == POWER_MANA && _bot->GetPowerPct(POWER_MANA) < threshold);
+    if (!hungry && !thirsty)
+        return;
+
+    bool used = false;
+    if (thirsty)
+        used = TryConsume(true);
+    if (!used && hungry)
+        TryConsume(false);
+}
+
+void BotAI::UpdateGrind(uint32 diff)
+{
+    if (!_grindMode || _stay || _combat->HasVictim())
+        return;
+    if (_movement->HasLiveGoal())
+        return;
+    if (Player* master = GetMaster())
+        if (_bot->IsInMap(master) && master->IsInCombat())
+            return;     // the master's fight comes first (assist handles it)
+
+    if (_grindScanCooldown > diff)
+    {
+        _grindScanCooldown -= diff;
+        return;
+    }
+    _grindScanCooldown = 3000;
+
+    Unit* target = nullptr;
+    GrindTargetCheck check(_bot, _bot, sBotConfig->SightDistance);
+    Trinity::UnitLastSearcher<GrindTargetCheck> checker(_bot, target, check);
+    Cell::VisitAllObjects(_bot, checker, sBotConfig->SightDistance);
+
+    if (target)
+        Attack(target, "grind");
 }
 
 void BotAI::UpdateNonCombat(uint32 diff)

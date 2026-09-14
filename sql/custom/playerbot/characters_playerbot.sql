@@ -11,6 +11,15 @@
 -- The script is idempotent (CREATE TABLE IF NOT EXISTS) and can be re-run.
 -- (It is also created automatically on worldserver startup if missing.)
 
+-- Bot -> master bindings. A row makes the bot log back in automatically the
+-- next time its master enters the world (written by `.bot add`, cleared by
+-- `.bot remove`; also created automatically on worldserver startup).
+CREATE TABLE IF NOT EXISTS `characters_playerbot` (
+    `guid` INT UNSIGNED NOT NULL,
+    `master` INT UNSIGNED NOT NULL,
+    PRIMARY KEY (`guid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Playerbot master bindings';
+
 -- Pool of names used when random bot characters are created. Operator data:
 -- the server only reads free rows; add names with plain INSERTs.
 --   INSERT INTO ai_playerbot_names (name) VALUES ('Nameone'), ('Nametwo');

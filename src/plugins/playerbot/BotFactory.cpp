@@ -19,7 +19,9 @@
 #include "Opcodes.h"
 #include "Packet.h"
 #include "Server/Packets/CharacterPackets.h"
+#include "Container/Bag.h"
 
+#include <functional>
 #include <vector>
 
 namespace
@@ -365,6 +367,54 @@ namespace
     }
 }
 
+namespace
+{
+    uint8 EquipSlotForInventoryType(uint32 inventoryType)
+    {
+        switch (inventoryType)
+        {
+            case INVTYPE_HEAD: return EQUIPMENT_SLOT_HEAD;
+            case INVTYPE_NECK: return EQUIPMENT_SLOT_NECK;
+            case INVTYPE_SHOULDERS: return EQUIPMENT_SLOT_SHOULDERS;
+            case INVTYPE_CLOAK: return EQUIPMENT_SLOT_BACK;
+            case INVTYPE_CHEST:
+            case INVTYPE_ROBE: return EQUIPMENT_SLOT_CHEST;
+            case INVTYPE_WRISTS: return EQUIPMENT_SLOT_WRISTS;
+            case INVTYPE_HANDS: return EQUIPMENT_SLOT_HANDS;
+            case INVTYPE_WAIST: return EQUIPMENT_SLOT_WAIST;
+            case INVTYPE_LEGS: return EQUIPMENT_SLOT_LEGS;
+            case INVTYPE_FEET: return EQUIPMENT_SLOT_FEET;
+            case INVTYPE_FINGER: return EQUIPMENT_SLOT_FINGER1;
+            case INVTYPE_TRINKET: return EQUIPMENT_SLOT_TRINKET1;
+            case INVTYPE_SHIELD:
+            case INVTYPE_HOLDABLE:
+            case INVTYPE_WEAPONOFFHAND: return EQUIPMENT_SLOT_OFFHAND;
+            case INVTYPE_WEAPON:
+            case INVTYPE_WEAPONMAINHAND:
+            case INVTYPE_2HWEAPON:
+            case INVTYPE_RANGED:
+            case INVTYPE_RANGEDRIGHT:
+            case INVTYPE_THROWN: return EQUIPMENT_SLOT_MAINHAND;
+            default: return uint8(-1);
+        }
+    }
+
+    void ForEachBagItem(Player* bot, std::function<bool(Item*)> const& visit)
+    {
+        for (uint8 i = 0; i < 4; ++i)                       // equipped bags
+            if (Bag* bag = bot->GetBagByPos(i))
+                for (uint8 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    if (Item* item = bag->GetItemByPos(slot))
+                        if (!visit(item))
+                            return;
+
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                if (!visit(item))
+                    return;
+    }
+}
+
 namespace BotFactory
 {
     bool IsBotAccount(uint32 accountId)
@@ -406,6 +456,71 @@ namespace BotFactory
         bot->SetPower(bot->GetPowerType(), bot->GetMaxPower(bot->GetPowerType()));
 
         bot->SaveToDB();
+    }
+
+    bool UpgradeGear(Player* bot)
+    {
+        if (!bot || !bot->IsAlive() || !bot->IsInWorld())
+            return false;
+
+        uint32 upgraded = 0;
+        for (;;)
+        {
+            // one equip per pass: equipping can invalidate bag positions,
+            // so re-scan from scratch until nothing improves anymore
+            Item* bestItem = nullptr;
+            uint8 bestSlot = 255;
+            int32 bestDelta = 0;
+
+            ForEachBagItem(bot, [&](Item* item) -> bool
+            {
+                ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+                if (!proto || proto->GetBonding() == BIND_QUEST)
+                    return true;
+                if (bot->CanUseItem(proto, false) != EQUIP_ERR_OK)
+                    return true;
+
+                uint8 const slot = EquipSlotForInventoryType(proto->GetInventoryType());
+                if (slot == uint8(-1))
+                    return true;
+
+                int32 delta = int32(proto->GetItemLevel());
+                if (Item* current = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    delta -= int32(current->GetTemplate()->GetItemLevel());
+                if (delta > bestDelta)
+                {
+                    bestDelta = delta;
+                    bestItem = item;
+                    bestSlot = slot;
+                }
+                return true;
+            });
+
+            if (!bestItem)
+                break;
+
+            uint32 const entry = bestItem->GetEntry();
+            uint8 const srcBag = bestItem->GetBagSlot();
+            uint8 const srcSlot = bestItem->GetSlot();
+            uint16 dest = 0;
+            if (bot->CanEquipNewItem(bestSlot, dest, entry, false) != EQUIP_ERR_OK)
+            {
+                // cannot wear it in that slot after all: skip without looping
+                TC_LOG_DEBUG("playerbot", "UpgradeGear: {} cannot equip {}", bot->GetName(), entry);
+                // blacklist this attempt by removing the item from the scan is
+                // not possible without state; break to stay safe
+                break;
+            }
+            bot->DestroyItem(srcBag, srcSlot, true);
+            if (bot->EquipNewItem(dest, entry, ItemContext::NONE, true))
+                ++upgraded;
+            LearnWeaponSkill(bot, sObjectMgr->GetItemTemplate(entry));
+        }
+
+        if (upgraded)
+            bot->SaveToDB();
+        TC_LOG_INFO("playerbot", "UpgradeGear: {} equipped {} upgrade(s)", bot->GetName(), upgraded);
+        return upgraded > 0;
     }
 
     bool CreateBotCharacter(uint32 accountId, std::string const& name, uint8 playerClass, uint8 race, uint8 gender)

@@ -29,6 +29,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 class Player;
 class WorldPacket;
@@ -76,12 +77,40 @@ public:
     void CommandRelease();
     void CommandStatus(Player* to);
     void CommandHeal();
+    void CommandBuff();
+    void CommandRez();
+    void CommandCure();
+    void CommandEat();
+    void CommandDrink();
+    void CommandUpgrade();
+    void CommandRepair();
+    void CommandTank();
+    void CommandDps();
+    void CommandGrind(bool on);
 
     // --- victim management (used by combat + retaliate) ----------------------
     void Attack(Unit* target, std::string reason);
     void StopAttacking(std::string reason);
     /// called by BotCombat when our victim died (queue loot, drop combat)
     void OnVictimDied(Unit* victim);
+
+    // --- party services (heals/rez/cure/buff, tank & grind modes) ------------
+    /// master/group members (+pets) in range - the roster every party pass uses
+    std::vector<Unit*> GetPartyUnits(float maxDist, bool includePets = true) const;
+    /// dead (but not ghost) party member within range, lowest by distance
+    Unit* FindDeadPartyMember(float range) const;
+    /// party member with a dispellable debuff of the given mask
+    Unit* FindDispelTarget(uint32 dispelMask, float range) const;
+    /// do we carry food (drink=false) / water (drink=true)?
+    bool HasConsumable(bool drink) const;
+    /// eat/drink the best matching consumable; true when something was used
+    bool TryConsume(bool drink);
+
+    bool IsTankMode() const { return _tankMode; }
+    void SetTankMode(bool on) { _tankMode = on; }
+    bool CanTank() const;
+    bool IsGrinding() const { return _grindMode; }
+    void SetGrind(bool on) { _grindMode = on; }
 
     // --- server -> bot packets (loot responses etc.) --------------------------
     void HandleBotOutgoingPacket(WorldPacket const* packet);
@@ -107,6 +136,9 @@ private:
     void UpdateDeath(uint32 diff);
     void UpdateBrain(uint32 diff);
     void UpdateRetaliate();
+    void UpdatePartyCare(uint32 diff);
+    void UpdateConsume(uint32 diff);
+    void UpdateGrind(uint32 diff);
     void UpdateNonCombat(uint32 diff);
     void UpdateWander(uint32 diff);
     void UpdateDiagnostics(uint32 diff);
@@ -128,6 +160,16 @@ private:
     // stay mode
     bool _stay = false;
     Optional<Position> _stayPoint;
+
+    // roles
+    bool _tankMode = false;
+    bool _grindMode = false;
+
+    // party care / consume / grind throttles
+    uint32 _partyCareCooldown = 0;
+    uint32 _consumeCooldown = 0;
+    uint32 _grindScanCooldown = 0;
+    uint32 _forceConsumeTimer = 0;
 
     // death / revive
     uint32 _deadTimer = 0;

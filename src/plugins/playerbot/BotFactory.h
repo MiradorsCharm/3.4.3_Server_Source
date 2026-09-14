@@ -30,6 +30,10 @@ namespace BotFactory
     /// called once after the bot entered the world
     void PrepareBot(Player* bot);
 
+    /// equip the best item-level upgrade per slot from the bot's own bags
+    /// ("upgrade" command); true when at least one slot was improved
+    bool UpgradeGear(Player* bot);
+
     /// create a new character for an existing (bot) account; returns the new guid or empty
     bool CreateBotCharacter(uint32 accountId, std::string const& name, uint8 playerClass, uint8 race, uint8 gender);
 

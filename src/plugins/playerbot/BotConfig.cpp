@@ -42,6 +42,8 @@ bool BotConfig::Load()
 
     AutoAssistMaster = sConfigMgr->GetBoolDefault("AiPlayerbot.AutoAssistMaster", true);
     ReviveDelayMs = getInt("AiPlayerbot.ReviveDelayMs", 5000);
+    EatDrinkPct = getInt("AiPlayerbot.EatDrinkPct", 50);
+    Grind = sConfigMgr->GetBoolDefault("AiPlayerbot.Grind", true);
 
     RandomBotCount = getInt("AiPlayerbot.RandomBotCount", 0);
     RandomBotMinLevel = getInt("AiPlayerbot.RandomBotMinLevel", 1);

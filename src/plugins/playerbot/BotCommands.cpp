@@ -76,6 +76,8 @@ public:
 
         if (sBotManager->AddBot(cache->Guid, masterGuid, false))
         {
+            // remember the binding: the master's next login re-adds the bot
+            sBotManager->PersistBot(cache->Guid, masterGuid);
             handler->PSendSysMessage("Bot {} is logging in. Whisper it 'follow' or 'attack my target'.", name);
             return true;
         }
@@ -91,6 +93,8 @@ public:
             handler->SendSysMessage("Usage: .bot remove <name>");
             return false;
         }
+        if (Player* bot = sBotManager->GetBotByName(name))
+            sBotManager->ForgetBot(bot->GetGUID());
         if (sBotManager->RemoveBot(name))
         {
             handler->PSendSysMessage("Bot {} is logging out.", name);
