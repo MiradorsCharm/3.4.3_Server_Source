@@ -31,6 +31,16 @@ unable to shoot (min range), cast (interrupted) or swing (the wedged
 auto-repeat spell pauses the combat timers) - "no actions executed" with a live
 target two yards away.
 
+And the "ranged bots don't go to their target / use no abilities" rewrite:
+this core only auto-drives melee swings and a running auto-repeat loop, so a
+ranged bot must walk into its OWN attack range (computed from its spellbook
+and equipped weapon, never a per-class constant), cast the best ready spell
+directly, treat a core-rejected cast as a failure, and - when it has no
+usable ranged attack at all (QA/test gear, empty spellbook) - close in and
+fight in melee. The equipment generator pins the same story: no QA/test
+items, slot-aware weapon rules, and weapon-skill proficiency as the real
+class gate. See RangedCombatCoreNativeTest below.
+
 Also pinned here: the stall report is rate limited (a stuck realm must stay
 readable), and the random-bot name pool is operator data - the auto-filler that
 generated and INSERTed names was removed because it spammed the console.
@@ -128,8 +138,12 @@ class MeleeRangeSourceTest(unittest.TestCase):
         # can never land: that is the zombie attack-animation state users reported.
         self.assertIn("bot->AttackStop()", body)
         self.assertIn("IsInMeleeRange(target)", body)
-        # Ranged bots chase with their own spell-range prereq, not into melee.
-        self.assertIn("ai->IsRanged(bot)", body)
+        # Ranged bots close to their REAL attack range (spellbook + equipped
+        # weapon, computed by the core's own spell ranges) - never a per-class
+        # constant - and strike directly once there. A bot with no usable
+        # ranged attack gets attackRange 0 and is handled by the melee branch.
+        self.assertIn("ai->GetBotAttackRange(target)", body)
+        self.assertIn("ai->FindBestAttackSpell(target)", body)
 
     def test_stop_distance_is_shared_by_chase_and_attack(self):
         """One place decides where a melee bot plants itself."""
@@ -230,6 +244,107 @@ class RangedDeadZoneTest(unittest.TestCase):
                                "bool MoveBackToRangeAction::isUseful()")
         self.assertIn("IsRanged", useful)
         self.assertIn("GetExactDist", useful)
+
+
+class RangedCombatCoreNativeTest(unittest.TestCase):
+    """Ranged bots fight from the range they ACTUALLY have, and they strike.
+
+    The "ranged bots don't go to their target and use no abilities" family of
+    reports: the old code engaged a ranged bot (Unit::Attack(victim, false))
+    and then *hoped* the engine would get around to walking in and casting.
+    Walking was gated by a per-class 25/28 yd heuristic instead of the bot's
+    own spell ranges, casting went through machinery that reported success
+    even when the core rejected the cast, and a bot whose gear/spellbook gave
+    it no usable ranged attack at all (QA/test items like "TESTING" wands in
+    the ranged slot, bows on mages, empty spellbooks) still parked at "spell
+    range" forever. This core only auto-drives melee swings and a running
+    auto-repeat loop - every other ranged attack is a spell somebody has to
+    cast. These pins keep the ranged path built on that fact:
+
+    - the attack range is computed from the bot's own spellbook and equipped
+      weapon (GetBotAttackRange), never from class or config guesses;
+    - the attack order walks a ranged bot into that range and casts the best
+      ready spell straight at the victim; no usable ranged attack means the
+      bot closes in and fights in melee instead of standing still;
+    - a rejected cast is a failure the engine can fall through, not a silent
+      success;
+    - random gear generation refuses QA/test items and class-unusable
+      weapons, so the ranged slot can never hold an item the bot cannot
+      attack with.
+    """
+
+    def test_attack_range_is_computed_from_spellbook_and_weapon(self):
+        body = function_body(f"{PLUGIN}/PlayerbotAI.cpp", "float PlayerbotAI::GetBotAttackRange(Unit* target)")
+        self.assertIn("GetSpellMap()", body, "the bot's own learned spells")
+        self.assertIn("GetMaxRange", body, "the core's own spell range (Spell::CheckRange metric)")
+        self.assertIn("GetWeaponForAttack(RANGED_ATTACK", body)
+        self.assertIn("HasSkill", body,
+                      "a ranged weapon only counts when the bot is proficient with it - "
+                      "an unusable item in the ranged slot must not fake a ranged attack")
+
+    def test_best_attack_spell_survives_the_core_trial_cast(self):
+        body = function_body(f"{PLUGIN}/PlayerbotAI.cpp", "uint32 PlayerbotAI::FindBestAttackSpell(Unit* target)")
+        self.assertIn("HasCooldown", body)
+        self.assertIn("CalcPowerCost", body, "unaffordable spells are not candidates")
+        self.assertIn("CanCastSpell", body, "the core's own trial cast makes the final call")
+
+    def test_attack_closes_to_real_range_and_strikes(self):
+        body = function_body(f"{PLUGIN}/strategy/actions/AttackAction.cpp", "bool AttackAction::Attack(Unit* target)")
+        self.assertIn("ai->GetBotAttackRange(target)", body)
+        self.assertIn("MoveTo(target, stop)", body, "a ranged bot walks into its own attack range")
+        self.assertIn("ai->FindBestAttackSpell(target)", body)
+        self.assertIn("ai->CastSpell(spellId, target)", body,
+                      "once in range the strike is issued directly - not delegated to a later engine pass")
+
+    def test_reach_spell_follows_the_real_range(self):
+        body = class_body(f"{PLUGIN}/strategy/actions/ReachTargetActions.h", "class ReachSpellAction")
+        self.assertIn("GetBotAttackRange", body)
+        self.assertNotIn("28.0f", body, "no per-class/heuristic spell distance")
+
+    def test_out_of_spell_trigger_follows_the_real_range(self):
+        body = class_body(f"{PLUGIN}/strategy/triggers/RangeTriggers.h", "class EnemyOutOfSpellRangeTrigger")
+        self.assertIn("GetBotAttackRange", body)
+        self.assertIn("GetExactDist", body)
+
+    def test_dead_zone_and_backoff_skip_bots_without_a_ranged_attack(self):
+        trigger = class_body(f"{PLUGIN}/strategy/triggers/RangeTriggers.h", "class EnemyInsideRangedDeadZoneTrigger")
+        self.assertIn("GetBotAttackRange", trigger,
+                      "a bot with nothing to shoot/cast must never back off - it closes in")
+        useful = function_body(f"{PLUGIN}/strategy/actions/MovementActions.cpp",
+                               "bool MoveBackToRangeAction::isUseful()")
+        self.assertIn("GetBotAttackRange", useful)
+
+    def test_cast_spell_reports_core_rejection_honestly(self):
+        body = function_body(f"{PLUGIN}/PlayerbotAI.cpp", "bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target)")
+        self.assertIn("prepare(targets)", body)
+        self.assertIn("SPELL_CAST_OK", body)
+        self.assertNotIn("return lastSpell.id == spellId;", body,
+                         "the old success test was computed from a value pre-set BEFORE the cast - "
+                         "a rejected cast still reported OK and the bot 'used no abilities at all'")
+
+    def test_factory_refuses_qa_items(self):
+        junk = function_body(f"{PLUGIN}/PlayerbotFactory.cpp", "bool PlayerbotFactory::IsJunkTestItem(")
+        self.assertIn("strstri", junk)
+        for marker in ('"test"', '"qa"', '"deprecated"'):
+            self.assertIn(marker, junk, "same name filter RandomItemMgr applies to guild-task items")
+        init = function_body(f"{PLUGIN}/PlayerbotFactory.cpp", "void PlayerbotFactory::InitEquipment(bool incremental)")
+        self.assertIn("IsJunkTestItem(proto)", init)
+
+    def test_factory_weapons_are_slot_aware_and_proficiency_gated(self):
+        body = function_body(f"{PLUGIN}/PlayerbotFactory.cpp", "bool PlayerbotFactory::CanEquipWeapon(")
+        self.assertIn("EQUIPMENT_SLOT_RANGED", body, "ranged-slot weapons are decided per class per slot")
+        self.assertIn("ITEM_SUBCLASS_WEAPON_WAND", body)
+        self.assertIn("HasSkill", body,
+                      "the weapon skill (granted only when the core's SkillRaceClassInfo allows it) "
+                      "is the real class gate - a template carrying no requirement cannot bypass it")
+        self.assertIn("INVTYPE_RANGED", body, "inventory type must match the slot")
+
+    def test_watchdog_recovers_a_stalled_ranged_bot(self):
+        body = function_body(f"{PLUGIN}/PlayerbotAI.cpp", "void PlayerbotAI::UpdateCombatDiagnostics(uint32 elapsed)")
+        self.assertIn("CombatStallAction::RetryAttack", body)
+        self.assertIn("FindBestAttackSpell", body, "the recovery strikes directly with a real spell")
+        self.assertIn('DoSpecificAction("reach melee")', body,
+                      "with nothing to cast the recovery closes in: a bot can always swing")
 
 
 class StrategyWiringTest(unittest.TestCase):

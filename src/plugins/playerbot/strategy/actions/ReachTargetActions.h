@@ -80,16 +80,33 @@ namespace ai
 
     class ReachSpellAction : public ReachTargetAction
 	{
-    public:
+	public:
         ReachSpellAction(PlayerbotAI* ai, float distance = 0.0f)
-            : ReachTargetAction(ai, "reach spell",
-                distance > 0.0f ? distance : ComputeSpellDistance(ai)) {}
+            : ReachTargetAction(ai, "reach spell", distance) {}
+
+        // How far this bot can actually attack from, computed from its own
+        // spellbook and equipped weapon every time - never a per-class
+        // constant. A bot with no usable ranged attack returns 0 and does not
+        // "reach spell" at all: the melee path (reach melee) handles it.
+        float GetAttackRange()
+        {
+            if (distance > 0.0f)
+                return distance;   // explicit pull-style distance, keep it
+
+            Unit* target = GetTarget();
+            return ai->GetBotAttackRange(target);
+        }
 
         virtual bool isUseful()
-        {
+		{
             Unit* target = GetTarget();
             if (!target)
                 return false;
+
+            float const range = GetAttackRange();
+            if (range <= 0.0f)
+                return false;
+
             // Use live 3D distance here (not the 2D "distance" value the base
             // class uses) so the bot does not decide "I'm in range" because
             // planar distance says 24 yd when the actual 3D gap (on a slope, a
@@ -98,7 +115,7 @@ namespace ai
             // call Spell::CheckRange() makes - while the "distance" value (and
             // GetDistance, which subtracts both combat reaches) reads up to
             // three yards short of what the core tests against.
-            return bot->GetExactDist(target) > (distance + sPlayerbotAIConfig.contactDistance);
+            return bot->GetExactDist(target) > (range + sPlayerbotAIConfig.contactDistance);
         }
 
         virtual bool isPossible()
@@ -106,28 +123,29 @@ namespace ai
             Unit* target = GetTarget();
             if (!target)
                 return false;
-            return bot->GetExactDist(target) <= (distance + sPlayerbotAIConfig.contactDistance)
+
+            float const range = GetAttackRange();
+            if (range <= 0.0f)
+                return false;
+
+            return bot->GetExactDist(target) <= (range + sPlayerbotAIConfig.contactDistance)
                 || IsMovingAllowed(target);
         }
 
-    private:
-        static float ComputeSpellDistance(PlayerbotAI* ai)
+        virtual bool Execute(Event event)
         {
-            Player* p = ai->GetBot();
-            if (!p)
-                return sPlayerbotAIConfig.spellDistance;
-            // Hunters / wand-equipped casters can reach 30 yards (auto-shot /
-            // wand max); pure casters with a nuke (Shadow Bolt, Frostbolt,
-            // Wrath, etc.) also top out at 30-40 yards. Use 30 yd as the
-            // approach stop distance so 25 yd is not the hard ceiling the
-            // action used to enforce, while still leaving a small safety
-            // buffer so the bot does not walk *to* 30 yd and immediately
-            // wander out when the target shuffles.
-            if (p->GetWeaponForAttack(RANGED_ATTACK, true) != nullptr
-                || p->GetClass() == CLASS_WARLOCK || p->GetClass() == CLASS_MAGE
-                || p->GetClass() == CLASS_PRIEST || p->GetClass() == CLASS_HUNTER)
-                return 28.0f;
-            return sPlayerbotAIConfig.spellDistance;
+            Unit* target = GetTarget();
+            if (!target)
+                return false;
+
+            float const range = GetAttackRange();
+            if (range <= 0.0f)
+                return false;
+
+            // Stop a couple of yards inside the attack envelope so target
+            // movement does not instantly push the bot out of range again.
+            float const stop = std::max(range - 2.0f, sPlayerbotAIConfig.meleeDistance);
+            return MoveTo(target, stop);
         }
     };
 }

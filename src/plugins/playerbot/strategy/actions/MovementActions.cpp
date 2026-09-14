@@ -463,7 +463,16 @@ bool MoveBackToRangeAction::isUseful()
         return false;
 
     Unit* target = AI_VALUE(Unit*, "current target");
-    return target && bot->GetExactDist(target) < 11.0f;
+    if (!target)
+        return false;
+
+    // A bot with no usable ranged attack has nothing waiting for it at range:
+    // backing off would just pull it out of the only fight it can have (the
+    // melee swing). It stays glued until it has something to shoot or cast.
+    if (ai->GetBotAttackRange(target) <= 0.0f)
+        return false;
+
+    return bot->GetExactDist(target) < 11.0f;
 }
 
 bool MoveBackToRangeAction::Execute(Event event)
@@ -475,13 +484,23 @@ bool MoveBackToRangeAction::Execute(Event event)
     if (!IsMovingAllowed(target))
         return false;
 
+    float const attackRange = ai->GetBotAttackRange(target);
+    if (attackRange <= 0.0f)
+        return false;
+
     // MoveTo() with a stop distance larger than the current gap walks backwards.
     // Back off to well past every ranged minimum range (Shoot/wand is 8 yd) and
-    // comfortably inside every nuke's maximum (25-40 yd): spellDistance / 2 with
-    // a floor that keeps it clear of the dead zone even for tiny configured
-    // spell distances. MoveTo() also cancels whatever cast is wedged (CastStop
-    // covers the stuck wand auto-repeat that freezes the combat timers).
-    float backTo = std::max(sPlayerbotAIConfig.spellDistance / 2.0f, sPlayerbotAIConfig.tooCloseDistance + 8.0f);
+    // comfortably inside THIS bot's own attack envelope: half of its real
+    // attack range with a floor that keeps it clear of the dead zone. Never
+    // beyond that envelope - a stop outside its own range would trade the
+    // dead zone for an out-of-range standstill. MoveTo() also cancels whatever
+    // cast is wedged (CastStop covers the stuck wand auto-repeat that freezes
+    // the combat timers).
+    float backTo = std::max(attackRange / 2.0f, sPlayerbotAIConfig.tooCloseDistance + 8.0f);
+    backTo = std::min(backTo, attackRange - 2.0f);
+    if (backTo <= bot->GetExactDist(target) + sPlayerbotAIConfig.contactDistance)
+        return false;
+
     return MoveTo(target, backTo);
 }
 

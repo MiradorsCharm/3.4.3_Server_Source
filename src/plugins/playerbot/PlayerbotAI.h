@@ -142,6 +142,22 @@ public:
     bool IsTank(Player* player);
     bool IsHeal(Player* player);
     bool IsRanged(Player* player);
+
+    // --- core-native ranged combat -------------------------------------------
+    // The true reach of this bot's ranged attacks, measured the way the core
+    // measures it (SpellInfo::GetMaxRange() is the very number
+    // Spell::CheckRange() compares against GetExactDist()). Computed from what
+    // the bot ACTUALLY has right now - learned damaging spells with a range,
+    // plus a ranged weapon it is proficient with - never from class or config
+    // guesses. Returns 0 when the bot has no usable ranged attack at all; such
+    // a bot fights in melee (the core auto-drives swings, never spells).
+    float GetBotAttackRange(Unit* target);
+
+    // The best hostile spell this bot can cast at the target right now
+    // (cooldown ready, power affordable, core trial-cast passes), highest
+    // spell level first. 0 when there is nothing to cast - callers fall back
+    // to melee instead of standing still.
+    uint32 FindBestAttackSpell(Unit* target);
     Creature* GetCreature(ObjectGuid guid);
     Unit* GetUnit(ObjectGuid guid);
     GameObject* GetGameObject(ObjectGuid guid);

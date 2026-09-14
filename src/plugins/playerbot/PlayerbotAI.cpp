@@ -284,6 +284,13 @@ CombatSnapshot PlayerbotAI::CaptureCombatSnapshot()
         || (bot->GetClass() == CLASS_PRIEST)
         || (bot->GetClass() == CLASS_DRUID && !HasAnyAuraOf(bot, "cat form", "bear form", "dire bear form", nullptr))
         || (bot->GetClass() == CLASS_HUNTER);
+    // ...but "ranged by class" is not the same as "has a ranged attack it can
+    // fire": a bot whose spellbook has no learned attack spell and whose ranged
+    // slot holds an item it cannot use is ranged in name only. The classifier
+    // must see that difference, or it waves the bot through as happily fighting
+    // while it stands there doing nothing.
+    snap.rangedAttackUsable = GetBotAttackRange(target) > 0.0f;
+    snap.autoRepeatActive = bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) != nullptr;
     snap.movementDisabled = bot->HasUnitState(UNIT_STATE_NOT_MOVE)
             || bot->HasAuraType(SPELL_AURA_MOD_CONFUSE) || bot->IsCharmed();
     snap.casting = bot->HasUnitState(UNIT_STATE_CASTING);
@@ -319,23 +326,13 @@ CombatSnapshot PlayerbotAI::CaptureCombatSnapshot()
         snap.hasLOS = bot->IsWithinLOSInMap(target);
         snap.inArc = bot->HasInArc(2.0f * static_cast<float>(M_PI) / 3.0f, target);
 
-        // Ranged / caster reach envelope: same logic ReachSpellAction uses, but
-        // with the true spell cap so the stall detector can tell "happily casting
-        // from 13 yd" apart from "standing still and not doing anything at 13 yd".
-        snap.spellRange = sPlayerbotAIConfig.spellDistance;
-        // Hunters/wand users auto-shoot from 30+ yards; give casters the same
-        // benefit so a warlock who is out of Shadow Bolt range (30 yd) is reported
-        // as needing a *spell* approach, not as a melee stall.
-        if (snap.hasRangedAttack)
-        {
-            // Hunters/wand users auto-shoot from 30+ yards; pure casters with
-            // Shadow Bolt / Frostbolt / Wrath also top out at 30-40 yards. 30 yd
-            // is the Wrath cap for wand/bow/gun and most nukes; using that as the
-            // "in spell range" envelope means a warlock at 13 yd is no longer
-            // flagged as "out of swing range" by the melee stall detector, and a
-            // warlock at 35 yd is correctly reported as needing a spell approach.
-            snap.spellRange = 30.0f;
-        }
+        // Ranged / caster reach envelope: the bot's ACTUAL attack range - the
+        // longest learned damaging spell plus a usable ranged weapon - never a
+        // per-class guess. A warlock at 13 yd with a 30 yd Shadow Bolt is in
+        // range; the same warlock with no learned spells is not, and the
+        // classifier below says so instead of calling him happily fighting.
+        float const attackRange = GetBotAttackRange(target);
+        snap.spellRange = attackRange > 0.0f ? attackRange : sPlayerbotAIConfig.spellDistance;
         snap.inSpellRange = snap.distance3d <= snap.spellRange;
     }
 
@@ -461,6 +458,44 @@ void PlayerbotAI::UpdateCombatDiagnostics(uint32 elapsed)
             bot->StopMoving();
             SetNextCheckDelay(sPlayerbotAIConfig.reactDelay);
             break;
+        case CombatStallAction::RetryAttack:
+        {
+            // In position but nothing is being fired. On this core ranged
+            // damage is always a spell somebody casts (melee swings and a
+            // running auto-repeat are the only attacks the core drives
+            // itself), so strike directly instead of waiting for another
+            // engine pass that already did not happen. When there is nothing
+            // to cast - empty spellbook, unusable ranged slot - close in and
+            // fight in melee: a bot can always swing, even a mage.
+            Unit* victim = aiObjectContext->GetValue<Unit*>("current target")->Get();
+            if (!victim)
+                victim = bot->GetVictim();
+
+            bool struck = false;
+            if (victim && victim->IsAlive() && bot->IsInMap(victim))
+            {
+                float const range = GetBotAttackRange(victim);
+                if (range > 0.0f && bot->GetExactDist(victim) <= range + sPlayerbotAIConfig.contactDistance
+                        && !bot->IsNonMeleeSpellCast(false, true, true))
+                {
+                    if (uint32 const spellId = FindBestAttackSpell(victim))
+                        struck = CastSpell(spellId, victim);
+                }
+            }
+
+            if (!struck)
+            {
+                // Nothing to fire from here: re-issue the approach so the next
+                // ticks walk the bot to a spot where it CAN attack - out to
+                // spell range, or in to melee when no ranged attack is usable.
+                bot->GetMotionMaster()->Clear();
+                bot->StopMoving();
+                SetNextCheckDelay(sPlayerbotAIConfig.reactDelay);
+                if (victim)
+                    DoSpecificAction("reach melee");
+            }
+            break;
+        }
         case CombatStallAction::DropTarget:
             bot->AttackStop();
             aiObjectContext->GetValue<Unit*>("old target")->Set(target);
@@ -950,7 +985,209 @@ bool PlayerbotAI::IsHeal(Player* player)
     return false;
 }
 
+// The weapon skill behind a weapon subclass. The bot's skills are granted by
+// the core's SkillRaceClassInfo for its race/class (see
+// PlayerbotFactory::InitSkills/SetRandomSkill), so HasSkill() on this result
+// is the authoritative "can this bot actually attack with that item" test -
+// independent of whatever requirement (or lack of one) the item template
+// itself carries. QA/test items in the client data are exactly the kind of
+// entry that has none. Returns 0 for subclasses with no skill (they can never
+// be used for an attack).
+static uint32 WeaponSkillForSubclass(uint32 weaponSubClass)
+{
+    switch (weaponSubClass)
+    {
+        case ITEM_SUBCLASS_WEAPON_AXE:        return SKILL_AXES;
+        case ITEM_SUBCLASS_WEAPON_AXE2:       return SKILL_TWO_HANDED_AXES;
+        case ITEM_SUBCLASS_WEAPON_BOW:        return SKILL_BOWS;
+        case ITEM_SUBCLASS_WEAPON_GUN:        return SKILL_GUNS;
+        case ITEM_SUBCLASS_WEAPON_MACE:       return SKILL_MACES;
+        case ITEM_SUBCLASS_WEAPON_MACE2:      return SKILL_TWO_HANDED_MACES;
+        case ITEM_SUBCLASS_WEAPON_POLEARM:    return SKILL_POLEARMS;
+        case ITEM_SUBCLASS_WEAPON_STAFF:      return SKILL_STAVES;
+        case ITEM_SUBCLASS_WEAPON_SWORD:      return SKILL_SWORDS;
+        case ITEM_SUBCLASS_WEAPON_SWORD2:     return SKILL_TWO_HANDED_SWORDS;
+        case ITEM_SUBCLASS_WEAPON_THROWN:     return SKILL_THROWN;
+        case ITEM_SUBCLASS_WEAPON_CROSSBOW:   return SKILL_CROSSBOWS;
+        case ITEM_SUBCLASS_WEAPON_WAND:       return SKILL_WANDS;
+        case ITEM_SUBCLASS_WEAPON_DAGGER:     return SKILL_DAGGERS;
+        case ITEM_SUBCLASS_WEAPON_FIST_WEAPON: return SKILL_FIST_WEAPONS;
+        default:                              return 0;
+    }
+}
 
+float PlayerbotAI::GetBotAttackRange(Unit* target)
+{
+    if (!bot || !bot->IsAlive())
+        return 0.0f;
+
+    float best = 0.0f;
+
+    // Learned hostile spells: the core's own maximum range - exactly the
+    // number Spell::CheckRange() later compares against GetExactDist(). A
+    // spell that is on cooldown or unaffordable right now still counts for
+    // the ENVELOPE (the bot can walk in and wait it out); affordability
+    // decides FindBestAttackSpell(), not the range.
+    for (PlayerSpellMap::const_iterator itr = bot->GetSpellMap().begin(); itr != bot->GetSpellMap().end(); ++itr)
+    {
+        if (itr->second.state == PLAYERSPELL_REMOVED || itr->second.disabled)
+            continue;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(itr->first, DIFFICULTY_NONE);
+        if (!spellInfo || spellInfo->IsPassive() || spellInfo->IsPositive())
+            continue;
+
+        // Only spells that can actually hurt the target qualify: damage or a
+        // harmful aura (DoT). Debuff-only spells with range would otherwise
+        // pull a bot to 30 yd for a curse it casts once and then stands for.
+        bool offensive = false;
+        for (uint8 effIndex = EFFECT_0; effIndex <= EFFECT_2; ++effIndex)
+        {
+            switch (spellInfo->GetEffect(SpellEffIndex(effIndex)).Effect)
+            {
+                case SPELL_EFFECT_SCHOOL_DAMAGE:
+                case SPELL_EFFECT_WEAPON_DAMAGE:
+                case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+                case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+                case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+                case SPELL_EFFECT_POWER_BURN:
+                case SPELL_EFFECT_APPLY_AURA:
+                    offensive = true;
+                    break;
+                default:
+                    break;
+            }
+            if (offensive)
+                break;
+        }
+        if (!offensive)
+            continue;
+
+        float const range = spellInfo->GetMaxRange(false, bot);
+        if (range > best)
+            best = range;
+    }
+
+    // A ranged weapon the bot is proficient with: wand shoot and auto-shot
+    // reach the 30 yd ranged envelope of this core. Proficiency is the gate -
+    // an unusable item in the ranged slot (the QA/test entries of the client
+    // data) must not fake a ranged attack.
+    if (Item* ranged = bot->GetWeaponForAttack(RANGED_ATTACK, true))
+    {
+        ItemTemplate const* proto = ranged->GetTemplate();
+        if (proto && proto->GetClass() == ITEM_CLASS_WEAPON)
+        {
+            uint32 const skill = WeaponSkillForSubclass(proto->GetSubClass());
+            switch (proto->GetSubClass())
+            {
+                case ITEM_SUBCLASS_WEAPON_BOW:
+                case ITEM_SUBCLASS_WEAPON_GUN:
+                case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+                    // auto-shot: the repeating shot every hunter learns
+                    if (skill && bot->HasSkill(skill) && bot->HasSpell(75))
+                        best = std::max(best, 30.0f);
+                    break;
+                case ITEM_SUBCLASS_WEAPON_WAND:
+                    // Shoot: the wand attack learned with the wand skill
+                    if (skill && bot->HasSkill(skill) && bot->HasSpell(5019))
+                        best = std::max(best, 30.0f);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    return best;
+}
+
+uint32 PlayerbotAI::FindBestAttackSpell(Unit* target)
+{
+    if (!bot || !target || !target->IsAlive())
+        return 0;
+
+    // Collect hostile spells with a real range, sort by spell level (highest
+    // first: that is the bot's best nuke), then let the core's own trial cast
+    // (CanCastSpell -> Spell::CheckCast) make the final call. Only a handful
+    // of candidates are trial-cast, so this stays cheap even every tick.
+    std::vector<std::pair<uint32, uint32> > candidates; // (spellLevel, spellId)
+
+    for (PlayerSpellMap::const_iterator itr = bot->GetSpellMap().begin(); itr != bot->GetSpellMap().end(); ++itr)
+    {
+        uint32 const spellId = itr->first;
+        if (itr->second.state == PLAYERSPELL_REMOVED || itr->second.disabled)
+            continue;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+        if (!spellInfo || spellInfo->IsPassive() || spellInfo->IsPositive())
+            continue;
+
+        if (bot->GetSpellHistory()->HasCooldown(spellId))
+            continue;
+
+        // Zero-range spells are melee touches, not ranged attacks.
+        float const range = spellInfo->GetMaxRange(false, bot);
+        if (range <= 0.0f)
+            continue;
+
+        // Must be able to pay the power cost right now.
+        bool affordable = true;
+        std::vector<SpellPowerCost> const costs = spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
+        for (SpellPowerCost const& cost : costs)
+        {
+            if (cost.Amount > 0 && (int32)bot->GetPower(cost.Power) < cost.Amount)
+            {
+                affordable = false;
+                break;
+            }
+        }
+        if (!affordable)
+            continue;
+
+        // Must be able to hurt: damage or harmful aura (DoT).
+        bool offensive = false;
+        for (uint8 effIndex = EFFECT_0; effIndex <= EFFECT_2; ++effIndex)
+        {
+            switch (spellInfo->GetEffect(SpellEffIndex(effIndex)).Effect)
+            {
+                case SPELL_EFFECT_SCHOOL_DAMAGE:
+                case SPELL_EFFECT_WEAPON_DAMAGE:
+                case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+                case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+                case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+                case SPELL_EFFECT_POWER_BURN:
+                case SPELL_EFFECT_APPLY_AURA:
+                    offensive = true;
+                    break;
+                default:
+                    break;
+            }
+            if (offensive)
+                break;
+        }
+        if (!offensive)
+            continue;
+
+        candidates.emplace_back(spellInfo->SpellLevel, spellId);
+    }
+
+    if (candidates.empty())
+        return 0;
+
+    std::sort(candidates.begin(), candidates.end(), std::greater<std::pair<uint32, uint32> >());
+
+    int trialCasts = 0;
+    for (std::pair<uint32, uint32> const& candidate : candidates)
+    {
+        if (++trialCasts > 5)
+            break;
+
+        if (CanCastSpell(candidate.second, target))
+            return candidate.second;
+    }
+
+    return 0;
+}
 
 namespace MaNGOS
 {
@@ -1242,7 +1479,6 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target)
         return true;
     }
 
-    aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().Set(spellId, target->GetGUID(), time(0));
     aiObjectContext->GetValue<LastMovement&>("last movement")->Get().Set(NULL);
 
     if (bot->IsFlying())
@@ -1327,14 +1563,38 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target)
         return false;
     }
 
-	spell->prepare(targets);
+    SpellCastResult const prepResult = spell->prepare(targets);
+    if (prepResult != SPELL_CAST_OK)
+    {
+        // The core rejected the cast. The old code pre-set the "last spell
+        // cast" value before prepare() and then returned success no matter
+        // what, so a rejected cast was invisible: the engine logged "OK",
+        // waited out the cast time, tried the same doomed cast again - and
+        // from outside the bot simply "used no abilities at all". Fail
+        // honestly instead: the engine then falls through to the action's
+        // alternatives (and the combat watchdog reports it when nothing
+        // fires at all).
+        static std::atomic<time_t> lastCastFailLog{ 0 };
+        time_t const now = GameTime::GetGameTime();
+        if (now - lastCastFailLog.load() >= 15)
+        {
+            lastCastFailLog = now;
+            TC_LOG_DEBUG("playerbot", "{}: core rejected cast of spell {} on {} (cast result {})",
+                    bot->GetName(), spellId, target->GetName(), static_cast<uint32>(prepResult));
+        }
+
+        if (oldSel)
+            bot->SetSelection(oldSel->GetGUID());
+        return false;
+    }
+
+    aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().Set(spellId, target->GetGUID(), time(0));
 	WaitForSpellCast(spell);
 
     if (oldSel)
         bot->SetSelection(oldSel->GetGUID());
 
-    LastSpellCast& lastSpell = aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get();
-    return lastSpell.id == spellId;
+    return true;
 }
 
 void PlayerbotAI::WaitForSpellCast(Spell *spell)

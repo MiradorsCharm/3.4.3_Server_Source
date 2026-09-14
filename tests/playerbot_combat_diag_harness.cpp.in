@@ -213,6 +213,52 @@ try
     CHECK(stall.report);
     CHECK(contains(stall.reason, "3D 3.00"));
 
+    // --- ranged bots: "in range" must also mean "attacking" ---------------------
+    // THE regression this rewrite exists for. The old classifier called any
+    // ranged bot inside spell range with LOS and facing "happily fighting" -
+    // with no requirement that anything was actually being cast or shot. That
+    // is exactly the state users reported: mage/warlock/priest bots standing
+    // at range, using no abilities at all, and no console line about it.
+    CombatSnapshot casterFighting = Fighting();
+    casterFighting.inMeleeRange = false;
+    casterFighting.attackState = false;
+    casterFighting.swingReady = false;
+    casterFighting.distance3d = 20.0f;
+    casterFighting.hasRangedAttack = true;
+    casterFighting.rangedAttackUsable = true;
+    casterFighting.inSpellRange = true;
+    casterFighting.spellRange = 30.0f;
+    casterFighting.casting = true;
+    CHECK(!StallOf(casterFighting).report);
+
+    // A wand/auto-shot bot shows its activity through the auto-repeat slot,
+    // not the casting flag - that counts as fighting too.
+    CombatSnapshot shooter = casterFighting;
+    shooter.casting = false;
+    shooter.autoRepeatActive = true;
+    CHECK(!StallOf(shooter).report);
+
+    // In spell range, line of sight, facing the victim - and nothing is being
+    // fired. Not happy: report it and strike/re-approach (RetryAttack).
+    CombatSnapshot idleRanged = casterFighting;
+    idleRanged.casting = false;
+    idleRanged.autoRepeatActive = false;
+    stall = StallOf(idleRanged);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::RetryAttack);
+    CHECK(contains(stall.reason, "nothing is being fired"));
+
+    // "Ranged" by class or by whatever sits in the ranged slot, but with no
+    // attack it can actually fire (QA/test item in the ranged slot, empty
+    // spellbook): the verdict must say the bot is closing in to fight in
+    // melee, not standing at range waiting for a shot it cannot fire.
+    CombatSnapshot fakeRanged = idleRanged;
+    fakeRanged.rangedAttackUsable = false;
+    stall = StallOf(fakeRanged);
+    CHECK(stall.report);
+    CHECK(stall.action == CombatStallAction::RetryAttack);
+    CHECK(contains(stall.reason, "no usable ranged attack"));
+
     // --- the printed line carries every number, not just prose ------------------
     std::string line = FormatCombatSnapshot(frozen);
     for (char const* key : { "tgt=alive", "d3d=", "dz=", "melee=", "inRange=0", "atk=1",

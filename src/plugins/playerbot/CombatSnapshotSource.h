@@ -41,6 +41,13 @@ namespace ai
         bool canMoveNow = false;              // the AI's own "am I allowed to start moving"
         float runSpeed = 0.0f;
         bool hasRangedAttack = false;         // bow/gun/wand/warglaive equipped for RANGED_ATTACK
+        bool rangedAttackUsable = false;      // the bot has ANY usable ranged attack right now:
+                                              // a learned damaging spell with range, or a ranged
+                                              // weapon it is actually proficient with. A bot that
+                                              // is "ranged" but fails this can never fight from
+                                              // range - it must close in like a melee bot.
+        bool autoRepeatActive = false;        // CURRENT_AUTOREPEAT_SPELL slot occupied: the wand
+                                              // shoot / hunter auto-shot loop is actually running
         bool inSpellRange = false;            // target within spell/ranged distance (30 yd wand/bolt)
         float spellRange = 0.0f;              // max range of whatever ranged attack the bot has
 
