@@ -299,6 +299,43 @@ minute and one line per fifteen seconds for the whole realm; `DebugCombat = 2`
 additionally logs a snapshot once per second per bot at debug level, which needs
 `Logger.playerbot=2,Console Server` and is a one-bot-at-a-time tool.
 
+### Bots have no account-wide collections
+
+Bots log in through a socket-less `WorldSession` created with battle.net account
+id `0` (`PlayerbotHolder::AddPlayerBot`). Id `0` is not a row in
+`battlenet_accounts`, and `battlenet_item_appearances.battlenetAccountId` carries
+a foreign key to it, so **every account-wide collection write by a bot is a
+failed statement**. Players found this the hard way: each bot save appended one
+`INSERT INTO battlenet_item_appearances ... VALUES (0, <block>, <mask>)` per
+non-empty appearance block, MySQL rejected all of them (errno 1452), and the
+worldserver console was filled with `Unhandled MySQL errno 1452` until it was
+unusable. The same saves also wrote toys, heirlooms, mounts and battle pets under
+account `0`.
+
+A session without a battle.net account therefore has no account-wide collection
+at all: `CollectionMgr` and `BattlePetMgr` skip such sessions, so bots
+
+* never collect appearances (no transmog bitset, no `Transmog` update-field
+  growth either - both of which cost memory and bandwidth for a client that does
+  not exist),
+* never collect heirlooms, toys or mounts (a bot still *learns* a mount spell it
+  is given, it is only the collection entry that is skipped),
+* never own battle pets: the journal stays disabled, so the bot is not taught
+  `SPELL_BATTLE_PET_TRAINING` and neither trainers nor summon spells can grant it
+  a pet.
+
+Hunter/warlock **combat** pets are a different system (per character, stored in
+`character_pet`) and are untouched - the AI still sends them in and they still
+fight.
+
+Cleanup for a realm that ran the affected builds: the FK rejection means
+`battlenet_item_appearances` itself never kept a zero row, but the other
+collection tables did. Rows for account `0` there are junk and can be removed
+with, for example,
+`DELETE FROM battle_pets WHERE battlenetAccountId = 0;` (repeat for
+`battle_pet_slots` and `bnet_account_*` tables), which is a cleanup, not a fix -
+only the code change above stops the rows from coming back.
+
 ### Random bots
 
 With `AiPlayerbot.RandomBotAutologin = 1` the `RandomPlayerbotMgr` keeps

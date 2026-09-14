@@ -202,7 +202,16 @@ public:
     bool HasJournalLock() const { return _hasJournalLock; }
     void ToggleJournalLock(bool lock) { _hasJournalLock = lock; }
 
-    bool IsBattlePetSystemEnabled() { return GetSlot(BattlePetSlot::Slot0)->Locked != true; }
+    // The battle pet journal is an account-wide collection stored in the auth
+    // database under the session's battle.net account id (`battle_pets`,
+    // `battle_pet_slots`). A playerbot session logs in with battle.net account
+    // id 0 (PlayerbotHolder::AddPlayerBot) and has no account to store the
+    // collection in, so the whole system stays disabled for it: no PET journal,
+    // no battle pets learned from trainers or summon spells, and no rows
+    // written for account 0 on every save.
+    bool CanStoreBattlePets() const;
+
+    bool IsBattlePetSystemEnabled();
 
     bool GetPetBySpellId(uint32 spellId);
 

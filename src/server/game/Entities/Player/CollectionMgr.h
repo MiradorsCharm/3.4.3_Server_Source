@@ -138,6 +138,16 @@ public:
     std::unordered_set<uint32> GetAppearanceIds() const;
 
 private:
+    // Account-wide collections (toys, heirlooms, mounts, appearances) live in
+    // the auth database under the session's battle.net account id. A session
+    // that has no battle.net account (playerbots log in with battlenetAccountId
+    // 0) must not write to those tables at all: every row would carry id 0,
+    // which `fk_battlenet_item_appearances` rejects, and a save writes one
+    // INSERT per non-empty appearance block - thousands of failing statements
+    // per save, each one logged. Such a session simply has no account-wide
+    // collection storage.
+    bool HasAccountStorage() const;
+
     bool CanAddAppearance(ItemModifiedAppearanceEntry const* itemModifiedAppearance) const;
     void AddItemAppearance(ItemModifiedAppearanceEntry const* itemModifiedAppearance);
 

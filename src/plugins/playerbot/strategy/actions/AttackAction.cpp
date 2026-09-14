@@ -38,7 +38,19 @@ bool AttackMyTargetAction::Execute(Event event)
         return false;
     }
 
-    return Attack(target);
+    if (!Attack(target))
+        return false;
+
+    // Answer the order. Grinding bots stay silent (their attack calls are not
+    // verbose), but a direct order must be visibly accepted - "the bot said
+    // nothing and did nothing" is indistinguishable from "the command never
+    // reached the bot" otherwise.
+    ostringstream out;
+    out << "Attacking " << target->GetName();
+    if (ai->IsRanged(bot) && !IsInMeleeRange(target))
+        out << " at range";
+    ai->TellMaster(out);
+    return true;
 }
 
 bool AttackAction::Attack(Unit* target)
@@ -140,49 +152,47 @@ bool AttackAction::Attack(Unit* target)
     ai->ChangeEngine(BOT_STATE_COMBAT);
 
     bool const ranged = ai->IsRanged(bot);
+    bool const inMeleeRange = IsInMeleeRange(target);
 
-    if (!IsInMeleeRange(target))
+    if (!inMeleeRange && !ranged)
     {
-        if (!ranged)
+        if (!ApproachForMelee(target))
         {
-            if (!ApproachForMelee(target))
-            {
-                if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
-                    bot->AttackStop();
-
-                if (verbose)
-                {
-                    ostringstream out;
-                    out << "I cannot get to " << target->GetName();
-                    ai->TellMaster(out);
-                }
-                return false;
-            }
-        }
-        else
-        {
-            // Caster / hunter: do not call bot->Attack() at all when outside melee
-            // reach. The core puts the unit into UNIT_STATE_MELEE_ATTACKING on
-            // Attack() and keeps trying (and failing) a melee swing every tick,
-            // which is what used to set swingErr=NotInRange and make the combat
-            // watchdog think the caster was stuck in melee. Drop any stale melee
-            // swing from a previous victim instead.
             if (bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
                 bot->AttackStop();
+
+            if (verbose)
+            {
+                ostringstream out;
+                out << "I cannot get to " << target->GetName();
+                ai->TellMaster(out);
+            }
+            return false;
         }
     }
 
-    // Unit::Attack is a no-op when the same melee swing is already running,
-    // but skip the call entirely so we never spam AttackStart packets. Only
-    // engage melee when we can actually swing; ranged/caster bots rely on
-    // their spells/auto-shot and must not be put in melee-attacking state
-    // from 13 yards away - doing so leaves swingErr=NotInRange and makes the
-    // combat watchdog think the caster is stuck in melee.
-    if (!ranged || IsInMeleeRange(target))
-    {
-        if (bot->GetVictim() != target || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
-            bot->Attack(target, true);
-    }
+    // Engaging is not optional. Unit::Attack() is what creates the victim link
+    // ("I am fighting that thing") the rest of the fight is built on: the melee
+    // swing loop, the pet's own attack order, the threat/attacker bookkeeping
+    // and every trigger that reads GetVictim(). Ordering "attack" - or grinding
+    // - must never leave the bot with only an AI-side target name while the
+    // core still believes the bot is fighting nobody: that is exactly the
+    // "nothing happens" report (no swing, no auto-shot, the target does not
+    // even know it is in a fight).
+    //
+    // meleeAttack=false is the core's own "engage at range" mode: the victim is
+    // set exactly as for a melee attack, but UNIT_STATE_MELEE_ATTACKING stays
+    // clear, so Unit::DoMeleeAttackIfReady() never runs its range/arc test and
+    // a caster or hunter cannot end up reporting AttackSwingErr::NotInRange
+    // from 13 yards (the regression this branch exists for). When the mode has
+    // to change (bot closed in, or was pulled into melee), Unit::Attack(victim,
+    // meleeAttack) switches between melee and ranged without dropping the
+    // victim - unlike AttackStop(), which would end the fight.
+    bool const wantMelee = !ranged || inMeleeRange;
+    bool const meleeAttacking = bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING);
+
+    if (bot->GetVictim() != target || meleeAttacking != wantMelee)
+        bot->Attack(target, wantMelee);
 
     return true;
 }
