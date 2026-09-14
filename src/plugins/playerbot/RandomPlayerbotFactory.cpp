@@ -247,7 +247,7 @@ string RandomPlayerbotFactory::CreateRandomBotName()
         uint32 id = urand(minId, maxId);
         result = CharacterDatabase.PQuery(
                 "SELECT n.name FROM ai_playerbot_names n "
-                "LEFT OUTER JOIN characters e ON e.name = n.name "
+                "LEFT OUTER JOIN characters e ON e.name COLLATE utf8mb4_unicode_ci = n.name COLLATE utf8mb4_unicode_ci "
                 "WHERE e.guid IS NULL AND n.name_id >= '{}' "
                 "ORDER BY n.name_id LIMIT 1", id);
         if (result)
@@ -259,7 +259,7 @@ string RandomPlayerbotFactory::CreateRandomBotName()
 
     result = CharacterDatabase.PQuery(
             "SELECT n.name FROM ai_playerbot_names n "
-            "LEFT OUTER JOIN characters e ON e.name = n.name "
+            "LEFT OUTER JOIN characters e ON e.name COLLATE utf8mb4_unicode_ci = n.name COLLATE utf8mb4_unicode_ci "
             "WHERE e.guid IS NULL "
             "ORDER BY n.name_id LIMIT 1");
     if (result)
@@ -540,7 +540,7 @@ string RandomPlayerbotFactory::CreateRandomGuildName()
     {
         uint32 id = urand(minId, maxId);
         result = CharacterDatabase.PQuery("SELECT n.name FROM ai_playerbot_guild_names n "
-                "LEFT OUTER JOIN guild e ON e.name = n.name "
+                "LEFT OUTER JOIN guild e ON e.name COLLATE utf8mb4_unicode_ci = n.name COLLATE utf8mb4_unicode_ci "
                 "WHERE e.guildid IS NULL AND n.name_id >= '{}' "
                 "ORDER BY n.name_id LIMIT 1", id);
         if (result)
@@ -551,7 +551,7 @@ string RandomPlayerbotFactory::CreateRandomGuildName()
     }
 
     result = CharacterDatabase.PQuery("SELECT n.name FROM ai_playerbot_guild_names n "
-            "LEFT OUTER JOIN guild e ON e.name = n.name "
+            "LEFT OUTER JOIN guild e ON e.name COLLATE utf8mb4_unicode_ci = n.name COLLATE utf8mb4_unicode_ci "
             "WHERE e.guildid IS NULL "
             "ORDER BY n.name_id LIMIT 1");
     if (result)

@@ -9,10 +9,37 @@ namespace ai
         EnemyTooCloseForSpellTrigger(PlayerbotAI* ai) : Trigger(ai, "enemy too close for spell") {}
         virtual bool IsActive()
 		{
-			Unit* target = AI_VALUE(Unit*, "current target");
+            Unit* target = AI_VALUE(Unit*, "current target");
             return target && AI_VALUE2(float, "distance", "current target") <= sPlayerbotAIConfig.spellDistance / 2;
         }
     };
+
+    // A ranged bot inside melee reach of its victim is in the classic dead zone:
+    // Shoot/wand is refused inside its minimum range, casts are interrupted, and
+    // the wedged auto-repeat spell pauses the combat timers so even melee swings
+    // stop. This is what made ranged bots stand nose-to-nose with a target doing
+    // nothing ("cannot shoot and cannot swing") - the AI had no behaviour at all
+    // for "too close", only for "too far".
+    class EnemyInsideRangedDeadZoneTrigger : public Trigger {
+    public:
+        EnemyInsideRangedDeadZoneTrigger(PlayerbotAI* ai) : Trigger(ai, "enemy inside ranged dead zone") {}
+        virtual bool IsActive()
+        {
+            if (!ai->IsRanged(bot))
+                return false;
+
+            Unit* target = AI_VALUE(Unit*, "current target");
+            if (!target)
+                return false;
+
+            // Centre-to-centre, like every core range test. 11 yd is past the
+            // 8-yd minimum range of Shoot/wand with margin; the matching action
+            // walks back out to spellDistance/2, so trigger and action cannot
+            // fight each other over the last yard.
+            return bot->GetExactDist(target) < 11.0f;
+        }
+    };
+
 
     class EnemyTooCloseForMeleeTrigger : public Trigger {
     public:

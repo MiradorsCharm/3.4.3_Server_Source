@@ -425,7 +425,7 @@ port=$($script:Port)
 bind-address=127.0.0.1
 default-storage-engine=innodb
 character-set-server=utf8mb4
-collation-server=utf8mb4_general_ci
+collation-server=utf8mb4_unicode_ci
 max_connections=200
 max_allowed_packet=256M
 net_read_timeout=$($script:ImportNetworkTimeout)
@@ -558,10 +558,10 @@ function Ensure-Databases {
         }
     } else {
         $sql = @(
-            'CREATE DATABASE IF NOT EXISTS `auth` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;',
-            'CREATE DATABASE IF NOT EXISTS `characters` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;',
-            'CREATE DATABASE IF NOT EXISTS `world` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;',
-            'CREATE DATABASE IF NOT EXISTS `hotfixes` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;'
+            'CREATE DATABASE IF NOT EXISTS `auth` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;',
+            'CREATE DATABASE IF NOT EXISTS `characters` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;',
+            'CREATE DATABASE IF NOT EXISTS `world` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;',
+            'CREATE DATABASE IF NOT EXISTS `hotfixes` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
         ) -join ' '
         [void](Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql $sql)
     }
@@ -638,7 +638,7 @@ function Import-GameData {
         $dump = Get-OrDownloadDump -FileName $script:WorldDump -Sha256 $script:WorldDumpSha256 -Kind 'world'
 
         Write-Host "  Preparing a clean 'world' database..."
-        $r = Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql "DROP DATABASE IF EXISTS world; CREATE DATABASE world DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+        $r = Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql "DROP DATABASE IF EXISTS world; CREATE DATABASE world DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
         if ($r.ExitCode -ne 0) {
             Fail-Setup "Could not recreate the 'world' database."
         }
@@ -654,7 +654,7 @@ function Import-GameData {
             Write-MysqlImportDiagnostics -Result $imp -SqlFile $dump
             # Do not leave a partial database that a later run could mistake
             # for a completed import merely because its version table exists.
-            [void](Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql "DROP DATABASE IF EXISTS world; CREATE DATABASE world DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;")
+            [void](Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql "DROP DATABASE IF EXISTS world; CREATE DATABASE world DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
             Fail-Setup "Failed to import $($script:WorldDump) into the 'world' database."
         }
 
@@ -679,7 +679,7 @@ function Import-GameData {
     $dump = Get-OrDownloadDump -FileName $script:HotfixesDump -Sha256 $script:HotfixesDumpSha256 -Kind 'hotfixes'
 
     Write-Host "  Preparing a clean 'hotfixes' database..."
-    $r = Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql "DROP DATABASE IF EXISTS hotfixes; CREATE DATABASE hotfixes DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+    $r = Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql "DROP DATABASE IF EXISTS hotfixes; CREATE DATABASE hotfixes DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
     if ($r.ExitCode -ne 0) {
         Fail-Setup "Could not recreate the 'hotfixes' database."
     }
@@ -693,7 +693,7 @@ function Import-GameData {
     if ($imp.ExitCode -ne 0) {
         Write-MysqlImportDiagnostics -Result $imp -SqlFile $dump
         # As with world, clear a partial import so retry detection is reliable.
-        [void](Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql "DROP DATABASE IF EXISTS hotfixes; CREATE DATABASE hotfixes DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;")
+        [void](Invoke-Mysql -User 'root' -Password $script:DbRootPass -Sql "DROP DATABASE IF EXISTS hotfixes; CREATE DATABASE hotfixes DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
         Fail-Setup "Failed to import $($script:HotfixesDump) into the 'hotfixes' database."
     }
 

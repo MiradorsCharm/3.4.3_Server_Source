@@ -386,13 +386,42 @@ migrations applied during the port:
   `AiPlayerbot.MeleeDistance`. The mismatch is not theoretical: a bot on a slope
   stopped at 3 yards of planar distance, the core reported `NotInRange`, and the
   bot stood in its attack animation indefinitely.
-* **Attack orders chase** — `AttackAction::Attack()` used to start the swing and
-  return success, while the chase it depends on (`reach melee`) is pushed by the
-  "enemy out of melee" trigger at *lower* priority than the attack action itself;
-  a bot that was out of reach re-declared success every tick and never walked.
-  The order that engages now also starts the approach, and a bot that cannot move
-  says so (and drops the stance) instead of posing.
+  There is a second, larger half to that same coin: **the core measures
+  centre-to-centre, the bot measured surface-to-surface**.
+  `GetDistance()`/`GetDistance2d()` subtract *both* combat reaches, so a stop
+  distance of `AiPlayerbot.MeleeDistance` (3.0) computed from those numbers put
+  a bot 5.5-7 yards centre-to-centre from a normal mob - permanently outside its
+  own swing envelope - while `MoveTo()`'s "am I there yet" gate subtracted the
+  bot's reach *again* and swallowed every final approach step smaller than ~2
+  yards. The approach then either never started ("no approach is running") or
+  parked just outside range ("gap is not closing"), for every bot on every mob:
+  `NotInRange` next to a stall report reading `3D 3.69 yd vs 5.00 yd` is this
+  bug - the two numbers were measured in different metrics. All reach/stop
+  arithmetic now runs in raw (`GetExactDist*`) yards, the same call the core
+  makes, and the stall report prints that same number.
+* **Ranged dead zone** — a ranged bot that gets pulled into melee range cannot
+  shoot (Shoot/wand minimum range), cannot cast (melee range interrupts) and -
+  because it keeps trying - wedges a spell into a current-cast slot. The AI used
+  to have "too far" behaviour (`reach spell`) but no "too close" behaviour at
+  all, so the bot just stood there ("no actions executed" with a live target two
+  yards away). `CombatStrategy` now wires the `enemy inside ranged dead zone`
+  trigger to the `back to range` action for *every* class (priests, shamans and
+  caster druids do not derive from `RangedCombatStrategy`, so it cannot live
+  there); the walk out also `CastStop()`s the wedged auto-repeat spell.
 * **Database** — `PQuery`/`PExecute` use `{}` fmt placeholders instead of `%s`/`%u`.
+* **Collations** — the `ai_playerbot_*` tables are JOINed against
+  `characters.name` / `guild.name`, whose collations come from the base schema
+  (`utf8mb4_unicode_ci`, and `utf8mb4_bin` for character names). A plugin table
+  created without an explicit `COLLATE` inherits the *database* default, which
+  is `utf8mb4_0900_ai_ci` on any MySQL 8 database that was created without one
+  - and MySQL refuses mixed-collation comparisons with errno 1267, which made
+  every name lookup fail while the console said "No more names left for random
+  guilds". Three layers prevent it: the JOIN predicates pin
+  `COLLATE utf8mb4_unicode_ci` explicitly (legal comparison no matter what the
+  tables carry), every `CREATE TABLE` (runtime auto-create *and*
+  `sql/custom/playerbot/characters_playerbot.sql`) pins the collation, and
+  `EnsureBotTable` converts a table that exists with a foreign collation at
+  startup. `sql/custom/playerbot/fix_collations.sql` is the by-hand equivalent.
 * **Bit-packed server packets** (e.g. `SMSG_TRADE_STATUS`) are parsed with
   `ResetBitPos()` / `ReadBit()` / `ReadBits(n)`.
 

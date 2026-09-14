@@ -11,23 +11,34 @@ using namespace ai;
 // as normal chasing/positioning. Below this the caller stays quiet.
 static uint32_t const COMBAT_STALL_MS = 4000;
 
-float ai::ComputeMeleeStopDistance(float swingRange, float distance3d, float zGap, float configured)
+float ai::ComputeMeleeStopDistance(float swingRange, float currentPlanarDistance, float zGap, float combinedReach, float configured)
 {
-    // The bot has to end up inside the core's own swing envelope. The AI steers by
-    // planar distance, so on a slope or a ledge the vertical gap has to come out
-    // of the budget before the bot decides it is close enough - otherwise it
-    // stops exactly where the core still refuses to swing.
+    // The core's swing envelope is 3D and centre-to-centre:
+    // GetExactDist(attacker, victim) <= max(reach + reach + 4/3, NOMINAL_MELEE_RANGE).
+    // The vertical gap has to come out of that budget before the planar stop is
+    // chosen - otherwise the bot parks exactly where the core still refuses the
+    // swing.
     float stop = swingRange - 1.0f - std::fabs(zGap);
 
-    // Never deeper inside the target than the configured stance distance, and
-    // never closer than 1.5 yards so the bot does not walk into the collision box
-    // (a 0.5-style value used to make bots shuffle inside the model forever).
-    stop = std::min(stop, configured);
-    stop = std::max(stop, 1.5f);
+    // The configured stance is a gap from the target's *surface*, so the pair's
+    // combined combat reach has to be added to it before it can cap a
+    // centre-to-centre stop. The legacy math compared a surface-compensated
+    // distance (GetDistance()/GetDistance2d() already subtract both reaches)
+    // against the raw envelope and then handed the result to MoveTo() as a
+    // surface-compensated stop: every bot therefore planted itself two to four
+    // yards outside its own swing envelope and swung at nothing forever
+    // (AttackSwingErr::NotInRange next to a log line claiming "3D 3.69 yd vs
+    // 5.00 yd" - the two numbers were not measured in the same metric).
+    stop = std::min(stop, combinedReach + configured);
+
+    // Never inside the model (the swing test is meaningless there and the bot
+    // shuffles against the collision box forever); big-reach pairs keep a
+    // proportional minimum so a Tauren does not try to stand inside a Kodo.
+    stop = std::max(stop, std::max(1.5f, combinedReach - 1.5f));
 
     // And never further away than it already is: MoveTo() reads a stop distance
     // above the current gap as "back off", which would undo the chase.
-    return std::min(stop, distance3d);
+    return std::min(stop, currentPlanarDistance);
 }
 
 CombatStall ai::EvaluateCombatStall(CombatSnapshot const& snap)

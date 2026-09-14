@@ -60,6 +60,7 @@ namespace ai
             creators["open loot"] = &ActionContext::open_loot;
             creators["guard"] = &ActionContext::guard;
             creators["move out of enemy contact"] = &ActionContext::move_out_of_enemy_contact;
+            creators["back to range"] = &ActionContext::back_to_range;
             creators["set facing"] = &ActionContext::set_facing;
             creators["attack duel opponent"] = &ActionContext::attack_duel_opponent;
             creators["drop target"] = &ActionContext::drop_target;
@@ -106,6 +107,7 @@ namespace ai
         static Action* healing_potion(PlayerbotAI* ai) { return new UseHealingPotion(ai); }
         static Action* healthstone(PlayerbotAI* ai) { return new UseItemAction(ai, "healthstone"); }
         static Action* move_out_of_enemy_contact(PlayerbotAI* ai) { return new MoveOutOfEnemyContactAction(ai); }
+        static Action* back_to_range(PlayerbotAI* ai) { return new MoveBackToRangeAction(ai); }
         static Action* set_facing(PlayerbotAI* ai) { return new SetFacingTargetAction(ai); }
         static Action* say(PlayerbotAI* ai) { return new SayAction(ai); }
     };

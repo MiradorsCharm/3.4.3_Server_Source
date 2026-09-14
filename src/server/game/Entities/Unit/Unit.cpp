@@ -15211,6 +15211,14 @@ void RelocateAttackerToAngle(Unit* origin, const AttackerData& attacker, float a
     attacker.unit->chaseRepositionCounter++;
     origin->GetCombatPosition(attacker.unit, x, y, z, angle, attacker.dist);
 
+    // A reposition onto (almost) the spot the attacker already stands on
+    // produces a path with segments shorter than 0.1 yd; MoveSplineInitArgs::
+    // Validate() then rejects the whole spline ("_checkPathLengths() failed"),
+    // the movement is never launched, and the log fills up. The attacker is
+    // already where it should be in that case - nothing to do.
+    if (attacker.unit->GetExactDist(x, y, z) < 0.5f)
+        return;
+
     Movement::MoveSplineInit init(attacker.unit);
     init.MoveTo(x, y, z, true, false);
     init.SetWalk(true);

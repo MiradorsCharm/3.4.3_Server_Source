@@ -41,9 +41,14 @@ namespace ai
     // One compact, grep-friendly line with every number in the snapshot.
     std::string FormatCombatSnapshot(CombatSnapshot const& snap);
 
-    // Where a melee bot should end up: never further out than the core's own
-    // swing envelope (3D and reach-based), never closer than 1.5 yards so it does
-    // not walk into the target's collision box, and never further away than it
-    // already is (that would back the bot up instead of approaching).
-    float ComputeMeleeStopDistance(float swingRange, float distance3d, float zGap, float configured);
+    // Where a melee bot should end up, in centre-to-centre (raw) planar yards -
+    // the same metric the core's own gates use (Unit::IsWithinMeleeRangeAt()
+    // compares the raw 3D distance against GetMeleeRange(), Spell::CheckRange()
+    // uses GetExactDist()). Never further out than one yard inside the swing
+    // envelope (the Z gap eats the planar budget first), never deeper than the
+    // configured stance measured from the target's surface (combined combat
+    // reach + configured), never inside the target's model, and never further
+    // away than the bot already is (that would back the bot up instead of
+    // approaching).
+    float ComputeMeleeStopDistance(float swingRange, float currentPlanarDistance, float zGap, float combinedReach, float configured);
 }
